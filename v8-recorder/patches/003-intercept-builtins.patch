@@ -1,0 +1,74 @@
+diff --git a/src/builtins/builtins-math.cc b/src/builtins/builtins-math.cc
+index 3456789..cdefghi 100644
+--- a/src/builtins/builtins-math.cc
++++ b/src/builtins/builtins-math.cc
+@@ -10,6 +10,7 @@
+ #include "src/codegen/code-stub-assembler.h"
+ #include "src/objects/objects-inl.h"
++#include "src/recorder/recorder.h"
+
+ namespace v8 {
+ namespace internal {
+@@ -50,6 +51,11 @@ BUILTIN(MathRandom) {
+   HandleScope scope(isolate);
+   double value = isolate->random_number_generator()->NextDouble();
+
++  // 录制随机数
++  if (Recorder::GetInstance()->IsRecording()) {
++    Recorder::GetInstance()->RecordRandom(value);
++  }
++
+   return *isolate->factory()->NewNumber(value);
+ }
+
+diff --git a/src/builtins/builtins-date.cc b/src/builtins/builtins-date.cc
+index 4567890..defghij 100644
+--- a/src/builtins/builtins-date.cc
++++ b/src/builtins/builtins-date.cc
+@@ -15,6 +15,7 @@
+ #include "src/objects/js-date-time-format.h"
+ #endif
++#include "src/recorder/recorder.h"
+
+ namespace v8 {
+ namespace internal {
+@@ -1050,6 +1051,11 @@ BUILTIN(DateNow) {
+   HandleScope scope(isolate);
+   double value = JSDate::CurrentTimeValue(isolate);
+
++  // 录制时间
++  if (Recorder::GetInstance()->IsRecording()) {
++    Recorder::GetInstance()->RecordTime(value);
++  }
++
+   return *isolate->factory()->NewNumber(value);
+ }
+
+diff --git a/src/builtins/builtins-console.cc b/src/builtins/builtins-console.cc
+index 5678901..efghijk 100644
+--- a/src/builtins/builtins-console.cc
++++ b/src/builtins/builtins-console.cc
+@@ -8,6 +8,7 @@
+ #include "src/execution/isolate.h"
+ #include "src/objects/objects-inl.h"
++#include "src/recorder/recorder.h"
+
+ namespace v8 {
+ namespace internal {
+@@ -30,6 +31,16 @@ BUILTIN(ConsoleLog) {
+     }
+   }
+
++  // 录制 console.log 输出
++  if (Recorder::GetInstance()->IsRecording()) {
++    std::string output;
++    for (int i = 1; i < args.length(); i++) {
++      Handle<String> str = Object::ToString(isolate, args.at(i)).ToHandleChecked();
++      output += str->ToCString().get();
++      if (i < args.length() - 1) output += " ";
++    }
++    Recorder::GetInstance()->RecordIO("console.log", output.c_str(), output.length());
++  }
++
+   return ReadOnlyRoots(isolate).undefined_value();
+ }

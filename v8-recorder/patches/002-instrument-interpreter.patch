@@ -1,0 +1,113 @@
+diff --git a/src/interpreter/interpreter.cc b/src/interpreter/interpreter.cc
+index 3456789..cdefghi 100644
+--- a/src/interpreter/interpreter.cc
++++ b/src/interpreter/interpreter.cc
+@@ -20,6 +20,7 @@
+ #include "src/interpreter/interpreter-intrinsics.h"
+ #include "src/objects/objects-inl.h"
+ #include "src/objects/shared-function-info.h"
++#include "src/recorder/recorder.h"
+
+ namespace v8 {
+ namespace internal {
+@@ -150,6 +151,28 @@ void Interpreter::DoDispatch(InterpreterAssembler* assembler) {
+   Node* bytecode = assembler->BytecodeOperand(0);
+   Node* target_bytecode = assembler->LoadBytecode(bytecode);
+
++  // 插桩：记录执行点
++  if (internal::Recorder::GetInstance()->IsRecording()) {
++    // 获取当前字节码偏移
++    Node* bytecode_offset = assembler->BytecodeOffset();
++
++    // 获取当前函数信息
++    Node* function = assembler->LoadRegister(Register::function_closure());
++    Node* shared_info = assembler->LoadObjectField(
++        function, JSFunction::kSharedFunctionInfoOffset);
++
++    // 获取行号和列号
++    Node* line_number = assembler->LoadObjectField(
++        shared_info, SharedFunctionInfo::kStartPositionOffset);
++
++    // 调用录制器
++    assembler->CallRuntime(
++        Runtime::kRecorderRecordExecutionPoint,
++        assembler->GetContext(),
++        bytecode_offset,
++        function);
++  }
++
+   assembler->DispatchToBytecode(target_bytecode, bytecode_offset);
+ }
+
+diff --git a/src/runtime/runtime.h b/src/runtime/runtime.h
+index 4567890..defghij 100644
+--- a/src/runtime/runtime.h
++++ b/src/runtime/runtime.h
+@@ -500,6 +500,7 @@ namespace internal {
+   F(ProfileCreateSnapshotDataBlob, 0, 1)                                       \
+   F(ProfilerNextBufferId, 0, 1)                                                \
+   F(ProfilerRequestInterrupt, 2, 1)                                            \
++  F(RecorderRecordExecutionPoint, 2, 1)                                        \
+
+ #define FOR_EACH_INTRINSIC_REGEXP(F, I)                                       \
+   F(RegExpExec, 4, 1)                                                          \
+diff --git a/src/runtime/runtime-recorder.cc b/src/runtime/runtime-recorder.cc
+new file mode 100644
+index 0000000..1234567
+--- /dev/null
++++ b/src/runtime/runtime-recorder.cc
+@@ -0,0 +1,50 @@
++// Copyright 2024 V8 Recorder Project
++
++#include "src/runtime/runtime-utils.h"
++#include "src/recorder/recorder.h"
++#include "src/objects/js-function-inl.h"
++#include "src/objects/shared-function-info-inl.h"
++
++namespace v8 {
++namespace internal {
++
++RUNTIME_FUNCTION(Runtime_RecorderRecordExecutionPoint) {
++  HandleScope scope(isolate);
++  DCHECK_EQ(2, args.length());
++
++  int bytecode_offset = args.smi_value_at(0);
++  Handle<JSFunction> function = args.at<JSFunction>(1);
++
++  // 获取函数信息
++  Handle<SharedFunctionInfo> shared(function->shared(), isolate);
++  Handle<String> name = SharedFunctionInfo::DebugName(shared);
++
++  // 获取源码位置
++  int line_number = 0;
++  int column_number = 0;
++
++  if (shared->HasSourceCode()) {
++    Handle<Script> script(Script::cast(shared->script()), isolate);
++    Script::PositionInfo info;
++    Script::GetPositionInfo(script, shared->StartPosition(), &info);
++    line_number = info.line;
++    column_number = info.column;
++  }
++
++  // 获取调用栈深度
++  JavaScriptFrameIterator it(isolate);
++  uint32_t stack_depth = 0;
++  while (!it.done()) {
++    stack_depth++;
++    it.Advance();
++  }
++
++  // 记录执行点
++  Recorder::GetInstance()->RecordExecutionPoint(
++      bytecode_offset,
++      name->ToCString().get(),
++      line_number,
++      column_number,
++      stack_depth);
++
++  return ReadOnlyRoots(isolate).undefined_value();
++}
++
++} // namespace internal
++} // namespace v8
