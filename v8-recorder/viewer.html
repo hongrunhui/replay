@@ -1,0 +1,456 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>v8rec Viewer</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{--bg:#1a1a2e;--surface:#16213e;--surface2:#0f3460;--text:#e0e0e0;--text2:#a0a0a0;--accent:#e94560;--blue:#4fc3f7;--green:#66bb6a;--orange:#ffa726;--purple:#ab47bc;--gray:#78909c;--border:#2a2a4a}
+body{font-family:'SF Mono',Monaco,'Cascadia Code',monospace;background:var(--bg);color:var(--text);height:100vh;display:flex;flex-direction:column;overflow:hidden;font-size:13px}
+#dropzone{padding:12px 20px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:16px;flex-shrink:0}
+#dropzone.dragover{background:var(--surface2);border-color:var(--accent)}
+.drop-label{color:var(--accent);font-weight:600;cursor:pointer;white-space:nowrap}
+.drop-label:hover{text-decoration:underline}
+#meta{color:var(--text2);font-size:12px;display:flex;gap:16px;flex-wrap:wrap}
+#meta span{white-space:nowrap}
+#file-input{display:none}
+#main{display:flex;flex:1;overflow:hidden}
+#left{width:45%;border-right:1px solid var(--border);display:flex;flex-direction:column;overflow:hidden}
+#right{flex:1;display:flex;flex-direction:column;overflow:hidden}
+#stats-bar{padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;gap:6px;flex-wrap:wrap;align-items:center;flex-shrink:0}
+.stat-chip{padding:2px 8px;border-radius:10px;font-size:11px;cursor:pointer;opacity:0.7;transition:opacity .15s}
+.stat-chip:hover,.stat-chip.active{opacity:1}
+.stat-chip.cat-Time{background:var(--blue);color:#000}
+.stat-chip.cat-Random{background:var(--green);color:#000}
+.stat-chip.cat-FileIO{background:var(--orange);color:#000}
+.stat-chip.cat-Network{background:var(--purple);color:#fff}
+.stat-chip.cat-DNS{background:#26a69a;color:#000}
+.stat-chip.cat-DynLib{background:#ef5350;color:#fff}
+.stat-chip.cat-Meta{background:var(--gray);color:#fff}
+#call-list{flex:1;overflow-y:auto;position:relative}
+#call-list-inner{position:relative}
+.call-row{padding:4px 12px;cursor:pointer;display:flex;gap:8px;align-items:baseline;border-bottom:1px solid rgba(255,255,255,.03);font-size:12px;height:28px}
+.call-row:hover{background:rgba(255,255,255,.05)}
+.call-seq{color:var(--text2);width:40px;text-align:right;flex-shrink:0}
+.call-type{width:160px;flex-shrink:0;font-weight:500}
+.call-rval{width:80px;flex-shrink:0;color:var(--text2)}
+.call-dlen{color:var(--text2);font-size:11px}
+.call-row.cat-Time .call-type{color:var(--blue)}
+.call-row.cat-Random .call-type{color:var(--green)}
+.call-row.cat-FileIO .call-type{color:var(--orange)}
+.call-row.cat-Network .call-type{color:var(--purple)}
+.call-row.cat-DNS .call-type{color:#26a69a}
+.call-row.cat-DynLib .call-type{color:#ef5350}
+.call-row.cat-Meta .call-type{color:var(--gray)}
+.call-detail{padding:8px 12px 8px 60px;background:rgba(255,255,255,.02);font-size:11px;color:var(--text2);border-bottom:1px solid rgba(255,255,255,.05);white-space:pre-wrap;word-break:break-all}
+#right-top{padding:8px 12px;background:var(--surface);border-bottom:1px solid var(--border);display:flex;align-items:center;gap:8px;flex-shrink:0}
+#right-top label{font-size:12px;color:var(--text2)}
+#source-area{flex:1;overflow-y:auto;padding:12px;font-size:12px;background:var(--bg);white-space:pre-wrap;word-break:break-all;border-bottom:1px solid var(--border);color:var(--text);tab-size:2}
+#source-area .src-filename{color:var(--blue);font-size:11px;margin-bottom:8px;padding-bottom:4px;border-bottom:1px solid var(--border)}
+#source-area .src-line{color:var(--text2);display:inline-block;width:32px;text-align:right;margin-right:8px;user-select:none}
+#console-label{padding:4px 12px;background:var(--surface);border-bottom:1px solid var(--border);font-size:11px;color:var(--text2);flex-shrink:0;cursor:pointer;user-select:none}
+#console-label:hover{background:var(--surface2)}
+#console-out{overflow-y:auto;padding:8px 12px;font-size:12px;min-height:60px;max-height:40%}
+.con-line{padding:1px 0;white-space:pre-wrap;word-break:break-all}
+.con-log{color:var(--text)}
+.con-warn{color:var(--orange)}
+.con-error{color:var(--accent)}
+.con-info{color:var(--blue)}
+.empty-state{display:flex;align-items:center;justify-content:center;height:100%;color:var(--text2);font-size:14px;text-align:center;padding:20px}
+/* PLACEHOLDER_SCROLL */
+</style>
+</head>
+<body>
+<div id="dropzone">
+  <label class="drop-label" for="file-input">Drop .v8rec file here or click to open</label>
+  <input type="file" id="file-input" accept=".v8rec">
+  <div id="meta"></div>
+</div>
+<div id="main">
+  <div id="left">
+    <div id="stats-bar"></div>
+    <div id="call-list"><div class="empty-state">No recording loaded</div></div>
+  </div>
+  <div id="right">
+    <div id="right-top">
+      <label>Source Code & Output</label>
+    </div>
+    <div id="source-area"><div class="empty-state">No source code found</div></div>
+    <div id="console-label">Console Output</div>
+    <div id="console-out"><div class="empty-state" style="height:auto;min-height:60px">Load a .v8rec file to see recorded output</div></div>
+  </div>
+</div>
+<script>
+// === Constants ===
+const CALL_TYPES={0x0001:'GETTIMEOFDAY',0x0002:'CLOCK_GETTIME',0x0003:'MACH_ABSOLUTE_TIME',0x0004:'TIME',0x0010:'ARC4RANDOM',0x0011:'ARC4RANDOM_BUF',0x0012:'GETENTROPY',0x0100:'OPEN',0x0101:'CLOSE',0x0102:'READ',0x0103:'WRITE',0x0104:'PREAD',0x0105:'PWRITE',0x0106:'STAT',0x0107:'FSTAT',0x0108:'LSTAT',0x0109:'ACCESS',0x010A:'READLINK',0x010B:'GETCWD',0x0200:'SOCKET',0x0201:'CONNECT',0x0202:'ACCEPT',0x0203:'RECV',0x0204:'SEND',0x0205:'RECVFROM',0x0206:'SENDTO',0x0207:'POLL',0x0208:'SELECT',0x0300:'GETADDRINFO',0x0400:'DLOPEN',0x0401:'DLSYM',0xFF00:'RANDOM_SEED',0xFF01:'THREAD_ID'};
+
+function getCategory(type){
+  if(type<=0x000F)return'Time';
+  if(type<=0x001F)return'Random';
+  if(type<=0x01FF)return'FileIO';
+  if(type<=0x02FF)return'Network';
+  if(type<=0x03FF)return'DNS';
+  if(type<=0x04FF)return'DynLib';
+  return'Meta';
+}
+
+const CAT_LABELS={'Time':'Time','Random':'Random','FileIO':'File I/O','Network':'Network','DNS':'DNS','DynLib':'DynLib','Meta':'Meta'};
+
+// === V8RecParser ===
+function parseV8Rec(buffer){
+  const dv=new DataView(buffer);
+  const dec=new TextDecoder();
+  const magic=dec.decode(new Uint8Array(buffer,0,8));
+  if(magic!=='V8RE0003'&&magic!=='V8RE0002')throw new Error('Unknown format: '+magic);
+  if(magic==='V8RE0002')return parseV2(buffer,dv,dec);
+  return parseV3(buffer,dv,dec);
+}
+
+function parseV2(buffer,dv,dec){
+  const header={magic:'V8RE0002',version:dv.getUint32(8,true),timestamp:Number(dv.getBigUint64(12,true)),call_count:dv.getUint32(20,true),flags:dv.getUint32(24,true)};
+  // V2 has different event format, minimal support
+  const calls=[];let off=32;
+  while(off+11<=buffer.byteLength){
+    const seq=Number(dv.getBigUint64(off,true));off+=8;
+    const etype=dv.getUint8(off);off+=1;
+    const dlen=dv.getUint16(off,true);off+=2;
+    if(off+dlen>buffer.byteLength)break;
+    const data=new Uint8Array(buffer,off,dlen);off+=dlen;
+    const V2_NAMES={0:'WALL_CLOCK_TIME',1:'MONOTONIC_TIME',2:'RANDOM_SEED',3:'THREAD_ID'};
+    calls.push({seq,type:etype,type_name:V2_NAMES[etype]||`0x${etype.toString(16)}`,rval:0,data_len:dlen,data:new Uint8Array(data)});
+  }
+  return{header,calls};
+}
+
+function parseV3(buffer,dv,dec){
+  const header={magic:'V8RE0003',version:dv.getUint32(8,true),timestamp:Number(dv.getBigUint64(12,true)),call_count:dv.getUint32(20,true),flags:dv.getUint32(24,true)};
+  const calls=[];let off=32;
+  while(off+18<=buffer.byteLength){
+    // Check for footer sentinel 0xDEADBEEF
+    if(off+8<=buffer.byteLength&&dv.getUint32(off,true)===0xDEADBEEF)break;
+    const seq=Number(dv.getBigUint64(off,true));off+=8;
+    const callType=dv.getUint16(off,true);off+=2;
+    const rval=dv.getInt32(off,true);off+=4;
+    const dlen=dv.getUint32(off,true);off+=4;
+    if(off+dlen>buffer.byteLength)break;
+    const data=new Uint8Array(buffer.slice(off,off+dlen));off+=dlen;
+    calls.push({seq,type:callType,type_name:CALL_TYPES[callType]||`0x${callType.toString(16).padStart(4,'0')}`,rval,data_len:dlen,data});
+  }
+  return{header,calls};
+}
+
+// === Data formatters ===
+function formatCallDetail(call){
+  const d=call.data,dv=d.length?new DataView(d.buffer,d.byteOffset,d.byteLength):null;
+  switch(call.type){
+    case 0x0001:// GETTIMEOFDAY
+      if(d.length>=16){
+        const sec=Number(dv.getBigInt64(0,true));
+        const usec=dv.getInt32(8,true);
+        const ms=sec*1000+Math.floor(usec/1000);
+        return`tv_sec=${sec}  tv_usec=${usec}\n→ ${new Date(ms).toISOString()}`;
+      }break;
+    case 0x0002:// CLOCK_GETTIME
+      if(d.length>=20){
+        const clkId=dv.getInt32(0,true);
+        const sec=Number(dv.getBigInt64(4,true));
+        const nsec=Number(dv.getBigInt64(12,true));
+        const clkNames={0:'REALTIME',1:'MONOTONIC',4:'MONOTONIC_RAW',6:'UPTIME_RAW'};
+        return`clock=${clkNames[clkId]||clkId}  sec=${sec}  nsec=${nsec}`;
+      }break;
+    case 0x0004:// TIME
+      if(d.length>=8){
+        const t=Number(dv.getBigInt64(0,true));
+        return`time_t=${t}\n→ ${new Date(t*1000).toISOString()}`;
+      }break;
+    case 0x0003:// MACH_ABSOLUTE_TIME
+      if(d.length>=8){
+        const ticks=Number(dv.getBigUint64(0,true));
+        return`ticks=${ticks}`;
+      }break;
+    case 0x0010:// ARC4RANDOM
+      return`value=${call.rval>>>0} (0x${(call.rval>>>0).toString(16).padStart(8,'0')})`;
+    case 0x0011:// ARC4RANDOM_BUF
+    case 0x0012:// GETENTROPY
+      return`${d.length} bytes: ${hexDump(d,64)}`;
+    default:
+      if(d.length>0)return`${d.length} bytes: ${hexDump(d,128)}`;
+      return`rval=${call.rval}`;
+  }
+  return`rval=${call.rval}`;
+}
+
+function hexDump(arr,maxBytes){
+  const n=Math.min(arr.length,maxBytes||64);
+  let s='';for(let i=0;i<n;i++)s+=(arr[i]<16?'0':'')+arr[i].toString(16)+' ';
+  if(arr.length>n)s+='...';
+  return s.trim();
+}
+
+// === UI State ===
+let recording=null;
+let activeFilters=new Set();
+let expandedCall=-1;
+let filteredCalls=[];
+
+const $=s=>document.querySelector(s);
+const dropzone=$('#dropzone'),fileInput=$('#file-input'),metaDiv=$('#meta');
+const statsBar=$('#stats-bar'),callList=$('#call-list');
+const sourceArea=$('#source-area'),consoleLabel=$('#console-label'),consoleOut=$('#console-out');
+
+// === File loading ===
+function handleFile(file){
+  const reader=new FileReader();
+  reader.onload=e=>{
+    try{
+      recording=parseV8Rec(e.target.result);
+      onRecordingLoaded();
+    }catch(err){
+      metaDiv.innerHTML=`<span style="color:var(--accent)">Error: ${err.message}</span>`;
+    }
+  };
+  reader.readAsArrayBuffer(file);
+}
+
+dropzone.addEventListener('dragover',e=>{e.preventDefault();dropzone.classList.add('dragover')});
+dropzone.addEventListener('dragleave',()=>dropzone.classList.remove('dragover'));
+dropzone.addEventListener('drop',e=>{e.preventDefault();dropzone.classList.remove('dragover');if(e.dataTransfer.files[0])handleFile(e.dataTransfer.files[0])});
+fileInput.addEventListener('change',e=>{if(e.target.files[0])handleFile(e.target.files[0])});
+
+// === Rendering ===
+function onRecordingLoaded(){
+  const h=recording.header;
+  metaDiv.innerHTML=`<span>${h.magic} v${h.version}</span><span>${new Date(h.timestamp).toLocaleString()}</span><span>${recording.calls.length} calls</span>`;
+  activeFilters.clear();
+  expandedCall=-1;
+  renderStats();
+  applyFilter();
+  renderSourceCode();
+  renderRecordedOutput();
+}
+
+function concatChunks(dec,chunks){
+  const totalLen=chunks.reduce((s,c)=>s+c.length,0);
+  const merged=new Uint8Array(totalLen);
+  let off=0;
+  for(const chunk of chunks){merged.set(chunk,off);off+=chunk.length;}
+  return dec.decode(merged);
+}
+
+function looksLikeJS(text){
+  // Must be valid UTF-8 text (no excessive replacement chars)
+  if((text.match(/\ufffd/g)||[]).length>text.length*0.05)return false;
+  // Count JS-specific patterns
+  let score=0;
+  if(/\bconsole\.(log|error|warn|info)\b/.test(text))score+=3;
+  if(/\bfunction\s+\w+\s*\(/.test(text))score+=2;
+  if(/\b(const|let|var)\s+\w+\s*=/.test(text))score+=2;
+  if(/\brequire\s*\(/.test(text))score+=2;
+  if(/\b(import|export)\s+/.test(text))score+=2;
+  if(/=>\s*[{(]/.test(text))score+=1;
+  if(/\/\/.*\n/.test(text))score+=1;
+  return score>=3;
+}
+
+function renderSourceCode(){
+  sourceArea.innerHTML='';
+  const dec=new TextDecoder('utf-8',{fatal:false});
+  // Build fd→filename map from OPEN calls
+  const fdToFile={};
+  // Collect READ content per fd, in order
+  const fdReads={};
+  for(const c of recording.calls){
+    if(c.type===0x0100&&c.data_len>8){// OPEN
+      const d=c.data;
+      const dv=new DataView(d.buffer,d.byteOffset,d.byteLength);
+      const fd=dv.getInt32(4,true);
+      const path=dec.decode(d.slice(8)).split('\0')[0];
+      if(fd>=0)fdToFile[fd]=path;
+    }
+    if(c.type===0x0102&&c.data_len>4&&c.rval>0){// READ
+      const d=c.data;
+      const dv=new DataView(d.buffer,d.byteOffset,d.byteLength);
+      const fd=dv.getInt32(0,true);
+      if(!fdReads[fd])fdReads[fd]=[];
+      fdReads[fd].push(d.slice(4));
+    }
+  }
+
+  // Strategy 1: Find .js files via OPEN→READ correlation
+  const jsFiles=[];
+  const usedFds=new Set();
+  for(const[fd,path]of Object.entries(fdToFile)){
+    if(!path.endsWith('.js')&&!path.endsWith('.mjs')&&!path.endsWith('.cjs'))continue;
+    if(path.includes('node_modules'))continue;
+    if(!fdReads[fd])continue;
+    usedFds.add(Number(fd));
+    const content=concatChunks(dec,fdReads[fd]);
+    if(content.length>10)jsFiles.push({path,content});
+  }
+
+  // Strategy 2: If no JS found via OPEN, scan READ content for JS source
+  if(jsFiles.length===0){
+    for(const[fd,chunks]of Object.entries(fdReads)){
+      if(usedFds.has(Number(fd)))continue;
+      const content=concatChunks(dec,chunks);
+      if(content.length<20)continue;
+      // Heuristic: looks like JS source code
+      if(looksLikeJS(content)){
+        const knownPath=fdToFile[fd];
+        jsFiles.push({path:knownPath||'(unknown source)',content});
+      }
+    }
+  }
+
+  if(jsFiles.length===0){
+    sourceArea.innerHTML='<div class="empty-state">No JS source code found in recording</div>';
+    return;
+  }
+  const frag=document.createDocumentFragment();
+  for(const file of jsFiles){
+    const header=document.createElement('div');
+    header.className='src-filename';
+    const shortName=file.path.split('/').pop();
+    header.textContent=shortName;
+    header.title=file.path;
+    frag.appendChild(header);
+    const lines=file.content.split('\n');
+    for(let i=0;i<lines.length;i++){
+      const row=document.createElement('div');
+      const num=document.createElement('span');
+      num.className='src-line';
+      num.textContent=i+1;
+      row.appendChild(num);
+      row.appendChild(document.createTextNode(lines[i]));
+      frag.appendChild(row);
+    }
+  }
+  sourceArea.appendChild(frag);
+}
+
+function renderRecordedOutput(){
+  consoleOut.innerHTML='';
+  const dec=new TextDecoder('utf-8',{fatal:false});
+  let hasOutput=false;
+  for(const c of recording.calls){
+    if(c.type!==0x0103)continue;// WRITE
+    if(c.data_len<=4)continue;// no content payload
+    const d=c.data;
+    const dv=new DataView(d.buffer,d.byteOffset,d.byteLength);
+    const fd=dv.getInt32(0,true);
+    if(fd!==1&&fd!==2)continue;
+    const text=dec.decode(d.slice(4));
+    if(!text)continue;
+    hasOutput=true;
+    const line=document.createElement('div');
+    line.className='con-line '+(fd===2?'con-error':'con-log');
+    line.textContent=text;
+    consoleOut.appendChild(line);
+  }
+  if(!hasOutput){
+    consoleOut.innerHTML='<div class="empty-state" style="height:auto;min-height:60px">No stdout/stderr output recorded</div>';
+  }
+}
+
+function renderStats(){
+  const counts={};
+  for(const c of recording.calls){
+    const cat=getCategory(c.type);
+    counts[cat]=(counts[cat]||0)+1;
+  }
+  statsBar.innerHTML='';
+  for(const cat of Object.keys(counts).sort()){
+    const chip=document.createElement('span');
+    chip.className=`stat-chip cat-${cat}${activeFilters.size===0||activeFilters.has(cat)?' active':''}`;
+    chip.textContent=`${CAT_LABELS[cat]||cat}: ${counts[cat]}`;
+    chip.onclick=()=>{
+      if(activeFilters.has(cat))activeFilters.delete(cat);
+      else activeFilters.add(cat);
+      renderStats();
+      applyFilter();
+    };
+    statsBar.appendChild(chip);
+  }
+}
+
+function applyFilter(){
+  if(!recording){filteredCalls=[];renderCallList();return;}
+  if(activeFilters.size===0)filteredCalls=recording.calls;
+  else filteredCalls=recording.calls.filter(c=>activeFilters.has(getCategory(c.type)));
+  expandedCall=-1;
+  renderCallList();
+}
+
+const ROW_H=28;
+const DETAIL_H=80;
+const BUFFER=20;
+
+function renderCallList(){
+  if(filteredCalls.length===0){
+    callList.innerHTML='<div class="empty-state">No calls to display</div>';
+    return;
+  }
+  // Virtual scrolling
+  const container=document.createElement('div');
+  container.id='call-list-inner';
+  callList.innerHTML='';
+  callList.appendChild(container);
+
+  let totalH=0;
+  const offsets=[];
+  for(let i=0;i<filteredCalls.length;i++){
+    offsets.push(totalH);
+    totalH+=ROW_H+(i===expandedCall?DETAIL_H:0);
+  }
+  container.style.height=totalH+'px';
+
+  const viewport=document.createElement('div');
+  viewport.style.position='absolute';viewport.style.left='0';viewport.style.right='0';
+  container.appendChild(viewport);
+
+  function render(){
+    const scrollTop=callList.scrollTop;
+    const viewH=callList.clientHeight;
+    // Binary search for first visible
+    let lo=0,hi=filteredCalls.length-1;
+    while(lo<hi){const mid=(lo+hi)>>1;if(offsets[mid]+ROW_H+(mid===expandedCall?DETAIL_H:0)<scrollTop)lo=mid+1;else hi=mid;}
+    const start=Math.max(0,lo-BUFFER);
+    let end=lo;
+    while(end<filteredCalls.length&&offsets[end]<scrollTop+viewH)end++;
+    end=Math.min(filteredCalls.length,end+BUFFER);
+
+    viewport.style.top=offsets[start]+'px';
+    const frag=document.createDocumentFragment();
+    for(let i=start;i<end;i++){
+      const c=filteredCalls[i];
+      const cat=getCategory(c.type);
+      const row=document.createElement('div');
+      row.className=`call-row cat-${cat}`;
+      row.innerHTML=`<span class="call-seq">${c.seq}</span><span class="call-type">${c.type_name}</span><span class="call-rval">${c.rval}</span><span class="call-dlen">${c.data_len}B</span>`;
+      row.onclick=()=>{expandedCall=expandedCall===i?-1:i;recalcAndRender()};
+      frag.appendChild(row);
+      if(i===expandedCall){
+        const det=document.createElement('div');
+        det.className='call-detail';
+        det.textContent=formatCallDetail(c);
+        frag.appendChild(det);
+      }
+    }
+    viewport.innerHTML='';
+    viewport.appendChild(frag);
+  }
+
+  function recalcAndRender(){
+    let t=0;
+    for(let i=0;i<filteredCalls.length;i++){offsets[i]=t;t+=ROW_H+(i===expandedCall?DETAIL_H:0);}
+    container.style.height=t+'px';
+    render();
+  }
+
+  callList.onscroll=render;
+  render();
+}
+</script>
+</body>
+</html>

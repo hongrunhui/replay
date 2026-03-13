@@ -11,6 +11,7 @@
 #include "src/intercept/intercept.h"
 
 #include <cstring>
+#include <cstdarg>
 #include <cstdlib>
 #include <dlfcn.h>
 #include <errno.h>
@@ -62,9 +63,14 @@ using namespace v8_recorder;
 
 // Re-entrancy guard — prevents infinite recursion when our intercepted
 // functions are called by the recording stream itself (e.g., write → Record → write)
-// Using a simple static int instead of thread_local to avoid TLS init issues
-// during dylib constructor phase.
-static __thread int g_intercept_depth = 0;
+//
+// IMPORTANT: Cannot use __thread / thread_local here because TLS is not yet
+// initialized when dyld calls our interposed functions during libSystem_initializer
+// (malloc init → arc4random → getentropy → our hook → TLS access → abort).
+// Using a plain global int. This is not thread-safe for concurrent calls, but
+// it's safe enough for the bootstrap phase and single-threaded programs.
+// TODO: switch to pthread_getspecific once we need multi-thread support.
+static int g_intercept_depth = 0;
 
 struct InterceptGuard {
   bool active;
@@ -78,6 +84,8 @@ struct InterceptGuard {
 // ============================================================
 // Time interception
 // ============================================================
+
+extern "C" {
 
 int my_gettimeofday(struct timeval* tv, void* tz) {
   InterceptGuard guard;
@@ -230,6 +238,70 @@ int my_getentropy(void* buf, size_t buflen) {
 // File I/O interception
 // ============================================================
 
+int my_open(const char* path, int flags, ...) {
+  // Extract optional mode argument
+  mode_t mode = 0;
+  if (flags & O_CREAT) {
+    va_list ap;
+    va_start(ap, flags);
+    mode = va_arg(ap, int);
+    va_end(ap);
+  }
+  InterceptGuard guard;
+  if (!guard) return open(path, flags, mode);
+  if (GetMode() == Mode::RECORDING) {
+    int ret = open(path, flags, mode);
+    int saved_errno = errno;
+    // Record: [4-byte flags][4-byte fd(=ret)][null-terminated path]
+    size_t pathlen = strlen(path);
+    std::vector<uint8_t> payload(4 + 4 + pathlen + 1);
+    memcpy(payload.data(), &flags, 4);
+    memcpy(payload.data() + 4, &ret, 4);
+    memcpy(payload.data() + 8, path, pathlen + 1);
+    GetStream()->Record(CallType::OPEN, static_cast<int32_t>(ret),
+                        payload.data(), payload.size());
+    errno = saved_errno;
+    return ret;
+  }
+  if (GetMode() == Mode::REPLAYING) {
+    const auto* call = GetStream()->Next(CallType::OPEN);
+    if (call) return call->return_value;
+  }
+  return open(path, flags, mode);
+}
+
+// openat — node uses this instead of open() on macOS
+int my_openat(int dirfd, const char* path, int flags, ...) {
+  mode_t mode = 0;
+  if (flags & O_CREAT) {
+    va_list ap;
+    va_start(ap, flags);
+    mode = va_arg(ap, int);
+    va_end(ap);
+  }
+  InterceptGuard guard;
+  if (!guard) return openat(dirfd, path, flags, mode);
+  if (GetMode() == Mode::RECORDING) {
+    int ret = openat(dirfd, path, flags, mode);
+    int saved_errno = errno;
+    // Record same format as open: [4-byte flags][4-byte fd(=ret)][null-terminated path]
+    size_t pathlen = strlen(path);
+    std::vector<uint8_t> payload(4 + 4 + pathlen + 1);
+    memcpy(payload.data(), &flags, 4);
+    memcpy(payload.data() + 4, &ret, 4);
+    memcpy(payload.data() + 8, path, pathlen + 1);
+    GetStream()->Record(CallType::OPEN, static_cast<int32_t>(ret),
+                        payload.data(), payload.size());
+    errno = saved_errno;
+    return ret;
+  }
+  if (GetMode() == Mode::REPLAYING) {
+    const auto* call = GetStream()->Next(CallType::OPEN);
+    if (call) return call->return_value;
+  }
+  return openat(dirfd, path, flags, mode);
+}
+
 ssize_t my_read(int fd, void* buf, size_t count) {
   InterceptGuard guard;
   if (!guard) return read(fd, buf, count);
@@ -271,7 +343,16 @@ ssize_t my_write(int fd, const void* buf, size_t count) {
   if (GetMode() == Mode::RECORDING) {
     ssize_t ret = write(fd, buf, count);
     int saved_errno = errno;
-    GetStream()->Record(CallType::WRITE, static_cast<int32_t>(ret), &fd, 4);
+    // Capture stdout/stderr content for viewer playback
+    if ((fd == STDOUT_FILENO || fd == STDERR_FILENO) && ret > 0) {
+      std::vector<uint8_t> payload(4 + ret);
+      memcpy(payload.data(), &fd, 4);
+      memcpy(payload.data() + 4, buf, ret);
+      GetStream()->Record(CallType::WRITE, static_cast<int32_t>(ret),
+                          payload.data(), payload.size());
+    } else {
+      GetStream()->Record(CallType::WRITE, static_cast<int32_t>(ret), &fd, 4);
+    }
     errno = saved_errno;
     return ret;
   }
@@ -335,6 +416,8 @@ int my_fstat(int fd, struct stat* buf) {
   return fstat(fd, buf);
 }
 
+}  // extern "C"
+
 // ============================================================
 // macOS DYLD_INTERPOSE registrations
 // ============================================================
@@ -350,8 +433,10 @@ DYLD_INTERPOSE(my_mach_absolute_time, mach_absolute_time)
 DYLD_INTERPOSE(my_arc4random, arc4random)
 DYLD_INTERPOSE(my_arc4random_buf, arc4random_buf)
 DYLD_INTERPOSE(my_getentropy, getentropy)
-// DYLD_INTERPOSE(my_read, read)       // TODO: enable after adding fd filtering
-// DYLD_INTERPOSE(my_write, write)     // TODO: enable after adding fd filtering
+DYLD_INTERPOSE(my_open, open)
+DYLD_INTERPOSE(my_openat, openat)
+DYLD_INTERPOSE(my_read, read)
+DYLD_INTERPOSE(my_write, write)
 // DYLD_INTERPOSE(my_stat, stat)       // TODO: enable after adding path filtering
 // DYLD_INTERPOSE(my_fstat, fstat)     // TODO: enable after adding fd filtering
 #endif
