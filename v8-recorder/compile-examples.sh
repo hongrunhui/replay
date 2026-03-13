@@ -1,5 +1,5 @@
 #!/bin/bash
-# 编译示例程序
+# Compile examples — new platform-level recording architecture
 
 set -e
 
@@ -7,57 +7,47 @@ echo "Compiling examples..."
 
 V8_DIR="v8-workspace/v8"
 OUT_DIR="$V8_DIR/out.gn/x64.release"
+SRC_FILES="src/recording/event_log.cc src/platform/recording_platform.cc src/platform/replay_platform.cc"
 
-# 编译 simple 示例
-echo "Compiling simple.cc..."
-g++ -std=c++17 \
-  -I$V8_DIR \
-  -I$V8_DIR/include \
-  examples/simple.cc \
-  -o simple \
-  -L$OUT_DIR/obj \
-  -lv8_monolith \
-  -pthread \
-  -ldl
+# Common flags
+CXX_FLAGS="-std=c++17 -I$V8_DIR -I$V8_DIR/include -I."
+LD_FLAGS="-L$OUT_DIR/obj -lv8_monolith -pthread -ldl"
 
-# 编译 fibonacci 示例
-echo "Compiling fibonacci.cc..."
-g++ -std=c++17 \
-  -I$V8_DIR \
-  -I$V8_DIR/include \
-  examples/fibonacci.cc \
-  -o fibonacci \
-  -L$OUT_DIR/obj \
-  -lv8_monolith \
-  -pthread \
-  -ldl
+# Compile record example
+echo "Compiling record.cc..."
+g++ $CXX_FLAGS \
+  examples/record.cc $SRC_FILES \
+  -o record \
+  $LD_FLAGS
 
-# 编译 replay 示例
+# Compile replay example
 echo "Compiling replay.cc..."
-g++ -std=c++17 \
-  -I$V8_DIR \
-  -I$V8_DIR/include \
-  examples/replay.cc \
+g++ $CXX_FLAGS \
+  examples/replay.cc $SRC_FILES \
   -o replay \
-  -L$OUT_DIR/obj \
-  -lv8_monolith \
-  -pthread \
-  -ldl
+  $LD_FLAGS
+
+# Compile time_travel example
+echo "Compiling time_travel.cc..."
+g++ $CXX_FLAGS \
+  examples/time_travel.cc $SRC_FILES \
+  -o time_travel \
+  $LD_FLAGS
 
 echo "========================================="
 echo "Examples compiled successfully!"
 echo "========================================="
 echo ""
 echo "Run examples:"
-echo "  ./simple      - Simple recording example"
-echo "  ./fibonacci   - Fibonacci with recording"
-echo "  ./replay <file> - Replay a recording file"
+echo "  ./record [output.v8rec]     - Record a session"
+echo "  ./replay <file.v8rec>       - Replay a recording"
+echo "  ./time_travel <file.v8rec>  - Time-travel determinism demo"
 echo ""
-echo "Output files:"
-echo "  simple.rec    - Recording from simple example"
-echo "  fibonacci.rec - Recording from fibonacci example"
+echo "Workflow:"
+echo "  1. ./record output.v8rec"
+echo "  2. ./replay output.v8rec"
+echo "  3. ./time_travel output.v8rec"
 echo ""
 echo "Analyze recordings:"
-echo "  python3 analyze.py simple.rec"
-echo "  python3 analyze.py fibonacci.rec --trace"
+echo "  python3 analyze.py output.v8rec"
 echo ""

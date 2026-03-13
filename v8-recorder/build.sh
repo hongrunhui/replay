@@ -13,6 +13,15 @@ cd v8-workspace/v8
 echo "Generating build files..."
 tools/dev/v8gen.py x64.release
 
+# 配置为单体构建（monolithic build）
+echo "Configuring monolithic build..."
+echo 'is_component_build = false' >> out.gn/x64.release/args.gn
+echo 'v8_monolithic = true' >> out.gn/x64.release/args.gn
+echo 'v8_use_external_startup_data = false' >> out.gn/x64.release/args.gn
+
+# 重新生成 ninja 文件
+gn gen out.gn/x64.release
+
 # 编译（这会花费 30-60 分钟）
 echo "Compiling V8 (this will take 30-60 minutes)..."
 echo "You can monitor progress in another terminal with:"

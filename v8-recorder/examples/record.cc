@@ -1,59 +1,51 @@
 // Copyright 2024 V8 Recorder Project
-// Replay example — re-executes JavaScript with recorded platform values
+// Recording example — demonstrates platform-level recording
 //
-// Uses ReplayPlatform to feed back recorded time/random values,
-// producing identical output to the original recording.
+// All non-deterministic V8 platform calls (time, etc.) are automatically
+// captured by RecordingPlatform. No V8 patches needed.
 
-#include <cstring>
 #include <iostream>
 #include <memory>
 #include <string>
 #include "include/libplatform/libplatform.h"
 #include "include/v8.h"
-#include "src/platform/replay_platform.h"
+#include "src/platform/recording_platform.h"
 
 int main(int argc, char* argv[]) {
-  if (argc < 2) {
-    std::cerr << "Usage: " << argv[0] << " <recording.v8rec>" << std::endl;
-    return 1;
-  }
-
-  const char* recording_file = argv[1];
+  const char* output_file = "output.v8rec";
+  if (argc >= 2) output_file = argv[1];
 
   // Initialize V8
   v8::V8::InitializeICUDefaultLocation(argv[0]);
   v8::V8::InitializeExternalStartupData(argv[0]);
 
-  // Create ReplayPlatform — loads the recording file
-  auto platform = std::make_unique<v8_recorder::ReplayPlatform>(
-      v8::platform::NewDefaultPlatform(), recording_file);
+  // Set deterministic random seed and record it
+  int random_seed = 42;
+  std::string seed_flag = "--random_seed=" + std::to_string(random_seed);
+  v8::V8::SetFlagsFromString(seed_flag.c_str());
 
-  // Restore random seed from recording
-  const v8_recorder::Event* seed_event =
-      platform->log().Next(v8_recorder::EventType::RANDOM_SEED);
-  if (seed_event && seed_event->data.size() >= sizeof(int)) {
-    int seed;
-    std::memcpy(&seed, seed_event->data.data(), sizeof(seed));
-    std::string seed_flag = "--random_seed=" + std::to_string(seed);
-    v8::V8::SetFlagsFromString(seed_flag.c_str());
-    std::cout << "[Replay] Restored random seed: " << seed << std::endl;
-  }
+  // Create RecordingPlatform wrapping the default platform
+  auto platform = std::make_unique<v8_recorder::RecordingPlatform>(
+      v8::platform::NewDefaultPlatform(), output_file);
+
+  // Record the random seed into the event log
+  platform->log().Append(v8_recorder::EventType::RANDOM_SEED,
+                          &random_seed, sizeof(random_seed));
 
   v8::V8::InitializePlatform(platform.get());
   v8::V8::Initialize();
+
   v8::Isolate::CreateParams create_params;
   create_params.array_buffer_allocator =
       v8::ArrayBuffer::Allocator::NewDefaultAllocator();
   v8::Isolate* isolate = v8::Isolate::New(create_params);
-
   {
     v8::Isolate::Scope isolate_scope(isolate);
     v8::HandleScope handle_scope(isolate);
     v8::Local<v8::Context> context = v8::Context::New(isolate);
     v8::Context::Scope context_scope(context);
 
-    // Same JavaScript as record.cc — Date.now() and Math.random()
-    // will return the recorded values via ReplayPlatform
+    // JavaScript that uses non-deterministic APIs
     const char* source = R"(
       function fibonacci(n) {
         if (n <= 1) return n;
@@ -78,7 +70,7 @@ int main(int argc, char* argv[]) {
       JSON.stringify(output, null, 2);
     )";
 
-    std::cout << "\n=== Replaying JavaScript Execution ===" << std::endl;
+    std::cout << "\n=== Recording JavaScript Execution ===" << std::endl;
 
     v8::Local<v8::String> source_str =
         v8::String::NewFromUtf8(isolate, source).ToLocalChecked();
@@ -95,7 +87,6 @@ int main(int argc, char* argv[]) {
   v8::V8::DisposePlatform();
   delete create_params.array_buffer_allocator;
 
-  std::cout << "\nReplay complete. Output should match the recording."
-            << std::endl;
+  std::cout << "\nRecording saved to: " << output_file << std::endl;
   return 0;
 }
