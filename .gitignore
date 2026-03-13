@@ -21,6 +21,7 @@ v8-recorder/build/
 
 # 录制文件
 *.rec
+*.v8rec
 
 # 临时文件和备份
 *.bak
