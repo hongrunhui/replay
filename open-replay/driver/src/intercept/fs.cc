@@ -329,6 +329,13 @@ int my_lstat(const char* path, struct stat* buf) {
 }  // extern "C"
 
 // --- Platform registration ---
+/*
+ * 【DYLD_INTERPOSE 注册】
+ * macOS 特有机制：在 __DATA,__interpose section 中放置 {替换函数, 原始函数} 对。
+ * dyld 加载 dylib 时自动将其他 image 中对原始函数的调用重定向到替换函数。
+ * 注意：同一 dylib 内部调用原始函数不会被重定向（这是 DYLD_INTERPOSE 的设计），
+ * 所以拦截函数内部调用 open() 会走真实的系统调用，不会自递归。
+ */
 #ifdef __APPLE__
 DYLD_INTERPOSE(my_open, open)
 DYLD_INTERPOSE(my_openat, openat)

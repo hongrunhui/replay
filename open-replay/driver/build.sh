@@ -38,6 +38,7 @@ if [[ "$(uname -s)" == "Darwin" ]]; then
     -I"$SRC_DIR" \
     "${SOURCES[@]}" \
     -ldl \
+    -L/opt/homebrew/opt/openssl@3/lib -lcrypto \
     -o "$OUTPUT"
 else
   # Linux: build .so

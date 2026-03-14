@@ -62,6 +62,41 @@ int my_getentropy(void* buf, size_t buflen) {
   return getentropy(buf, buflen);
 }
 
+// --- OpenSSL RAND_bytes interception ---
+// Node.js crypto module uses OpenSSL's RAND_bytes for crypto.randomBytes(),
+// crypto.randomUUID(), etc. OpenSSL doesn't use arc4random_buf — it has its
+// own entropy pool. We intercept RAND_bytes directly.
+
+// Forward declarations (avoid #include <openssl/rand.h> dependency).
+// Node.js v22 uses RAND_bytes_ex (not RAND_bytes) from OpenSSL 3.x.
+// OSSL_LIB_CTX is an opaque type — we just pass it through.
+typedef struct ossl_lib_ctx_st OSSL_LIB_CTX;
+int RAND_bytes_ex(OSSL_LIB_CTX* ctx, unsigned char* buf, size_t num,
+                  unsigned int strength);
+
+int my_RAND_bytes_ex(OSSL_LIB_CTX* ctx, unsigned char* buf, size_t num,
+                     unsigned int strength) {
+  InterceptGuard guard;
+  if (!guard) return RAND_bytes_ex(ctx, buf, num, strength);
+
+  if (RecordReplayIsRecording()) {
+    int ret = RAND_bytes_ex(ctx, buf, num, strength);
+    if (ret == 1 && buf && num > 0) {
+      RecordReplayBytes("RAND_bytes", buf, num);
+    }
+    return static_cast<int>(RecordReplayValue("RAND_bytes.ret",
+        static_cast<uintptr_t>(ret)));
+  }
+  if (RecordReplayIsReplaying()) {
+    int ret = static_cast<int>(RecordReplayValue("RAND_bytes.ret", 0));
+    if (ret == 1 && buf && num > 0) {
+      RecordReplayBytes("RAND_bytes", buf, num);
+    }
+    return ret;
+  }
+  return RAND_bytes_ex(ctx, buf, num, strength);
+}
+
 #ifndef __APPLE__
 ssize_t my_getrandom(void* buf, size_t buflen, unsigned int flags) {
   InterceptGuard guard;
@@ -90,4 +125,5 @@ ssize_t my_getrandom(void* buf, size_t buflen, unsigned int flags) {
 DYLD_INTERPOSE(my_arc4random, arc4random)
 DYLD_INTERPOSE(my_arc4random_buf, arc4random_buf)
 DYLD_INTERPOSE(my_getentropy, getentropy)
+DYLD_INTERPOSE(my_RAND_bytes_ex, RAND_bytes_ex)
 #endif
