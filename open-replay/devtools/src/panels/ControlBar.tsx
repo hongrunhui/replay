@@ -17,33 +17,31 @@ export function ControlBar({
   return (
     <div className="control-bar">
       <button onClick={onJumpToStart} disabled={loading} title="Jump to start">
-        |&lt;
+        ⏮
       </button>
       <button onClick={onStepBackward} disabled={loading || currentLine === null || currentLine <= 0} title="Step back">
-        &lt;
+        ◀
       </button>
       <button onClick={onStepForward} disabled={loading || currentLine === null} title="Step forward">
-        &gt;
+        ▶
       </button>
 
       <div className="timeline">
         <span className="timeline-label">
-          {currentLine !== null ? `Line ${currentLine + 1}` : 'Not paused'}
+          {loading ? '⏳ Loading...' : currentLine !== null ? `📍 Line ${currentLine + 1}` : '⏸ Not paused'}
         </span>
         <input
           type="range"
           min={0}
           max={Math.max(totalLines - 1, 1)}
           value={currentLine ?? 0}
-          onChange={e => onJumpToLine(Number(e.target.value))}
+          onChange={e => !loading && onJumpToLine(Number(e.target.value))}
           disabled={loading || totalLines === 0}
         />
         <span className="timeline-label" style={{ textAlign: 'right' }}>
-          {totalLines > 0 ? `/ ${totalLines} lines` : ''}
+          {totalLines > 0 ? `${totalLines} lines` : ''}
         </span>
       </div>
-
-      {loading && <span style={{ color: '#569cd6', fontSize: 12 }}>Loading...</span>}
     </div>
   );
 }

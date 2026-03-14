@@ -46,6 +46,7 @@ interface ReplayEngineOptions {
 
 export interface PauseState {
   frames: FrameInfo[];
+  stdout: string;  // console output captured up to this pause point
 }
 
 export interface FrameInfo {
@@ -76,6 +77,7 @@ export class ReplayEngine extends EventEmitter {
   private inspectorPort = 9229;
   private currentPause: PauseState | null = null;
   readonly scriptUrls = new Map<string, string>();   // scriptId -> url
+  capturedStdout = '';  // stdout captured during current runToLine execution
 
   constructor(opts: ReplayEngineOptions) {
     super();
@@ -201,7 +203,19 @@ export class ReplayEngine extends EventEmitter {
 
     // Track pause state
     this.onCDPEvent('Debugger.paused', (params: any) => {
-      this.currentPause = { frames: params?.callFrames || [] };
+      // Map CDP callFrame.location.lineNumber to our flat FrameInfo.lineNumber
+      const rawFrames = params?.callFrames || [];
+      this.currentPause = {
+        frames: rawFrames.map((f: any) => ({
+          callFrameId: f.callFrameId,
+          functionName: f.functionName || '',
+          url: f.url || '',
+          lineNumber: f.location?.lineNumber ?? f.lineNumber ?? 0,
+          columnNumber: f.location?.columnNumber ?? f.columnNumber ?? 0,
+          scopeChain: f.scopeChain || [],
+        })),
+        stdout: '',
+      };
       this.emit('paused', this.currentPause);
     });
     this.onCDPEvent('Debugger.resumed', () => {
@@ -361,6 +375,121 @@ export class ReplayEngine extends EventEmitter {
     return r?.result || [];
   }
 
+  /*
+   * 收集每行代码的执行次数。
+   * 原理：启动一个新的 replay 进程，开启 V8 Profiler 的精确覆盖率，
+   * 运行到结束，然后读取 coverage 数据转换为 line → hitCount 映射。
+   */
+  async collectHitCounts(targetFile: string): Promise<Record<number, number>> {
+    // Start a fresh replay process (no --inspect-brk, just run to completion)
+    const { nodePath, env, scriptPath } = this.buildSpawnConfig();
+    if (!scriptPath) return {};
+
+    const header = parseRecordingHeader(this.opts.recordingPath);
+
+    // Use --inspect (not --inspect-brk) so we can connect but script runs
+    const port = 9200 + Math.floor(Math.random() * 800);
+    const nodeArgs: string[] = [`--inspect=${port}`];
+    if (header.randomSeed) nodeArgs.push(`--random-seed=${header.randomSeed}`);
+    nodeArgs.push(scriptPath);
+
+    const child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+
+    // Wait for inspector
+    await new Promise<void>((resolve) => {
+      child.stderr?.on('data', (d: Buffer) => {
+        if (d.toString().includes('Debugger listening')) resolve();
+      });
+      setTimeout(resolve, 5000);
+    });
+
+    // Connect to inspector
+    const prevWs = this.ws;
+    const prevChild = this.child;
+    const prevPort = this.inspectorPort;
+    this.inspectorPort = port;
+
+    try {
+      await this.connectWS();
+    } catch {
+      child.kill();
+      this.ws = prevWs;
+      this.inspectorPort = prevPort;
+      return {};
+    }
+
+    try {
+      // Enable profiler with precise coverage
+      await this.sendCDP('Profiler.enable');
+      await this.sendCDP('Profiler.startPreciseCoverage', {
+        callCount: true,
+        detailed: true,
+      });
+      await this.sendCDP('Runtime.enable');
+      await this.sendCDP('Debugger.enable');
+
+      // Wait for script to finish
+      await new Promise<void>((resolve) => {
+        child.on('exit', () => resolve());
+        setTimeout(resolve, 15000);
+      });
+
+      // Collect coverage
+      const coverage = await this.sendCDP('Profiler.takePreciseCoverage') as any;
+      const result = coverage?.result || [];
+
+      // Find the target script and convert function coverage to line counts
+      const counts: Record<number, number> = {};
+      const filename = targetFile.split('/').pop() || targetFile;
+
+      for (const script of result) {
+        if (!script.url || (!script.url.includes(filename) && !script.url.includes(targetFile))) continue;
+
+        // Get source to map byte offsets to line numbers
+        let source = '';
+        try {
+          const src = await this.sendCDP('Debugger.getScriptSource', { scriptId: script.scriptId }) as any;
+          source = src?.scriptSource || '';
+        } catch { continue; }
+
+        if (!source) continue;
+
+        // Build offset → line number mapping
+        const lineOffsets: number[] = [0];
+        for (let i = 0; i < source.length; i++) {
+          if (source[i] === '\n') lineOffsets.push(i + 1);
+        }
+        const offsetToLine = (offset: number): number => {
+          for (let i = lineOffsets.length - 1; i >= 0; i--) {
+            if (lineOffsets[i] <= offset) return i;
+          }
+          return 0;
+        };
+
+        // Convert function ranges to line hit counts
+        for (const func of script.functions) {
+          for (const range of func.ranges) {
+            if (range.count === 0) continue;
+            const startLine = offsetToLine(range.startOffset);
+            const endLine = offsetToLine(range.endOffset);
+            for (let line = startLine; line <= endLine; line++) {
+              counts[line] = Math.max(counts[line] || 0, range.count);
+            }
+          }
+        }
+      }
+
+      return counts;
+    } finally {
+      // Cleanup
+      if (this.ws) this.ws.close();
+      this.ws = prevWs;
+      this.child = prevChild;
+      this.inspectorPort = prevPort;
+      child.kill();
+    }
+  }
+
   async runToCompletion(): Promise<number> {
     await this.resume();
     return new Promise((resolve) => this.once('exit', resolve));
@@ -467,7 +596,12 @@ export class ReplayEngine extends EventEmitter {
         process.stderr.write(`[child] ${msg}`);
         this.emit('stderr', msg);
       });
-      this.child.stdout?.on('data', (d: Buffer) => this.emit('stdout', d.toString()));
+      // Capture stdout for console output up to the pause point
+      this.capturedStdout = '';
+      this.child.stdout?.on('data', (d: Buffer) => {
+        this.capturedStdout += d.toString();
+        this.emit('stdout', d.toString());
+      });
       this.child.on('exit', (code) => this.emit('exit', code ?? 0));
     }
 
@@ -477,50 +611,74 @@ export class ReplayEngine extends EventEmitter {
     this.onCDPEvent('Debugger.scriptParsed', (p: any) => {
       if (p?.url) this.scriptUrls.set(p.scriptId, p.url);
     });
+    // Helper: map CDP callFrames to our FrameInfo (location.lineNumber → lineNumber)
+    const mapFrames = (raw: any[]): any[] => raw.map((f: any) => ({
+      callFrameId: f.callFrameId,
+      functionName: f.functionName || '',
+      url: f.url || '',
+      lineNumber: f.location?.lineNumber ?? f.lineNumber ?? 0,
+      columnNumber: f.location?.columnNumber ?? f.columnNumber ?? 0,
+      scopeChain: f.scopeChain || [],
+    }));
+
+    let pauseReason = '';
     this.onCDPEvent('Debugger.paused', (p: any) => {
-      this.currentPause = { frames: p?.callFrames || [] };
+      pauseReason = p?.reason || '';
+      this.currentPause = { frames: mapFrames(p?.callFrames || []), stdout: '' };
       this.emit('paused', this.currentPause);
     });
     this.onCDPEvent('Debugger.resumed', () => {
       this.currentPause = null;
     });
 
-    // Enable domains
     await this.sendCDP('Runtime.enable');
     await this.sendCDP('Debugger.enable');
-
-    // Release --inspect-brk hold
     await this.sendCDP('Runtime.runIfWaitingForDebugger');
 
     // Step 1: Wait for "Break on start" pause
-    const initialPause = await new Promise<boolean>((resolve) => {
+    const gotInitialPause = await new Promise<boolean>((resolve) => {
       if (this.currentPause) { resolve(true); return; }
       const h = () => resolve(true);
       this.once('paused', h);
-      setTimeout(() => { this.off('paused', h); resolve(false); }, 5000);
+      setTimeout(() => { this.off('paused', h); resolve(false); }, 8000);
     });
-    if (!initialPause) return null;
+    if (!gotInitialPause) return null;
 
-    // Step 2: Now we're paused at "Break on start". Set the breakpoint.
-    const urlRegex = `.*${fileUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`;
+    // Step 2: Set breakpoint (we're paused, so this is safe)
+    // Use just the filename for matching (works with file:///private/tmp/... URLs)
+    const filename = fileUrl.split('/').pop() || fileUrl;
+    const urlRegex = `.*${filename.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`;
     await this.sendCDP('Debugger.setBreakpointByUrl', { urlRegex, lineNumber });
 
-    // Step 3: Resume — script runs until it hits the breakpoint
+    // Step 3: Resume past "Break on start"
     await this.resume();
 
-    // Step 4: Wait for our breakpoint to hit
+    // Step 4: Wait for the REAL breakpoint hit (not "Break on start")
     return new Promise<PauseState | null>((resolve) => {
+      const resolveWithStdout = (state: PauseState | null) => {
+        if (state) {
+          resolve({ ...state, stdout: this.capturedStdout });
+        } else {
+          resolve(null);
+        }
+      };
+
       const onPause = () => {
         if (!this.currentPause) return;
-        // Accept any pause at or near the target line
+        if (pauseReason === 'Break on start') {
+          this.resume().catch(() => {});
+          return;
+        }
         this.off('paused', onPause);
-        resolve(this.currentPause);
+        resolveWithStdout(this.currentPause);
       };
       this.on('paused', onPause);
-      // If already paused (breakpoint hit during resume), check immediately
-      if (this.currentPause) { resolve(this.currentPause); return; }
+      if (this.currentPause && pauseReason !== 'Break on start') {
+        resolveWithStdout(this.currentPause);
+        return;
+      }
       this.once('exit', () => { this.off('paused', onPause); resolve(null); });
-      setTimeout(() => { this.off('paused', onPause); resolve(null); }, 10000);
+      setTimeout(() => { this.off('paused', onPause); resolve(null); }, 15000);
     });
   }
 

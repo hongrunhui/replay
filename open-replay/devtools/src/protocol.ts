@@ -112,6 +112,11 @@ export class ReplayClient {
     return r?.messages || [];
   }
 
+  async collectHitCounts(file: string): Promise<Record<number, number>> {
+    const r = await this.send('Recording.collectHitCounts', { file });
+    return r?.counts || {};
+  }
+
   async readFile(path: string): Promise<string> {
     const r = await this.send('Recording.readFile', { path });
     return r?.contents || '';

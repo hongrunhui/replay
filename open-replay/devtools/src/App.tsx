@@ -17,6 +17,7 @@ export type AppState = {
   frames: PauseFrame[];
   variables: Record<string, unknown>;
   consoleMessages: ConsoleMessage[];
+  hitCounts: Record<number, number>;
   breakpoints: Set<number>;
   loading: boolean;
   status: string;
@@ -34,6 +35,7 @@ export function App() {
     frames: [],
     variables: {},
     consoleMessages: [],
+    hitCounts: {},
     breakpoints: new Set(),
     loading: false,
     status: 'Disconnected',
@@ -66,8 +68,15 @@ export function App() {
         ...s, connected: true, sources, loading: false,
         sourceCode, sourceFile,
         totalLines: sourceCode ? sourceCode.split('\n').length : 0,
-        status: `Connected: ${info.title || scriptPath.split('/').pop()}`,
+        status: `Connected: ${info.title || scriptPath.split('/').pop()} — collecting hit counts...`,
       }));
+
+      // Collect line execution counts in background
+      if (scriptPath) {
+        client.collectHitCounts(scriptPath).then(counts => {
+          setState(s => ({ ...s, hitCounts: counts, status: s.status.replace(' — collecting hit counts...', '') }));
+        }).catch(() => {});
+      }
     } catch (e: any) {
       setState(s => ({ ...s, status: `Error: ${e.message}`, loading: false }));
     }
@@ -87,11 +96,17 @@ export function App() {
     } catch {}
   }, [client]);
 
+  // Use ref to avoid stale closure for sourceFile
+  const sourceFileRef = useRef(state.sourceFile);
+  sourceFileRef.current = state.sourceFile;
+
   const jumpToLine = useCallback(async (line: number) => {
     if (!client.connected) return;
+    const file = sourceFileRef.current;
+    if (!file) { console.warn('No source file'); return; }
     setState(s => ({ ...s, loading: true, status: `Jumping to line ${line + 1}...` }));
     try {
-      const result = await client.runToLine(state.sourceFile || '', line);
+      const result = await client.runToLine(file, line);
       if (result.paused && result.frames?.length) {
         const topFrame = result.frames[0];
         // Evaluate local variables
@@ -109,11 +124,15 @@ export function App() {
           }
         } catch {}
 
+        // Console output from runToLine = output produced up to this line
+        const consoleOutput = (result as any).console || [];
+
         setState(s => ({
           ...s,
           currentLine: topFrame.line,
           frames: result.frames!,
           variables: vars,
+          consoleMessages: consoleOutput,
           loading: false,
           status: `Paused at line ${topFrame.line + 1}`,
         }));
@@ -123,7 +142,7 @@ export function App() {
     } catch (e: any) {
       setState(s => ({ ...s, loading: false, status: `Error: ${e.message}` }));
     }
-  }, [client, state.sourceFile]);
+  }, [client]);
 
   const evaluate = useCallback(async (expression: string): Promise<string> => {
     if (!state.frames[0]) return 'No active frame';
@@ -182,14 +201,21 @@ export function App() {
           />
           <div className="panels">
             <div className="panel-left">
+              {state.sourceFile && (
+                <div style={{ padding: '4px 12px', fontSize: 11, color: '#888', background: '#252526', borderBottom: '1px solid #333' }}>
+                  📄 {state.sourceFile}
+                </div>
+              )}
               <SourcePanel
                 code={state.sourceCode}
                 currentLine={state.currentLine}
                 breakpoints={state.breakpoints}
+                hitCounts={state.hitCounts}
                 onToggleBreakpoint={toggleBreakpoint}
                 onClickLine={jumpToLine}
                 onLoadFile={loadSource}
                 sourceFile={state.sourceFile}
+                evaluate={state.frames.length > 0 ? evaluate : undefined}
               />
             </div>
             <div className="panel-right">

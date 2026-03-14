@@ -119,6 +119,9 @@ export class CDPProtocolHandler {
           const state = await eng.runToLine(file, line);
           if (!state) return { paused: false, frames: [], reason: 'timeout or script ended' };
           const top = state.frames[0];
+          // stdout contains console output produced up to this line
+          const stdout = state.stdout || '';
+          const consoleLines = stdout.split('\n').filter((l: string) => l.trim());
           return {
             paused: true,
             line: top?.lineNumber ?? -1,
@@ -130,6 +133,11 @@ export class CDPProtocolHandler {
               line: f.lineNumber,
               column: f.columnNumber,
               url: f.url,
+            })),
+            console: consoleLines.map((text: string, i: number) => ({
+              messageId: `stdout-${i}`,
+              level: 'log',
+              text,
             })),
           };
         } catch (e: any) {
@@ -255,6 +263,20 @@ export class CDPProtocolHandler {
             point: '0',
           })),
         };
+
+      // Collect per-line execution counts by running replay with V8 coverage
+      case 'Recording.collectHitCounts': {
+        const file = params.file as string;
+        this.session.ensureEngine();
+        const eng = this.session.engine;
+        if (!eng) throw new Error('Engine not available');
+        try {
+          const counts = await eng.collectHitCounts(file);
+          return { counts };
+        } catch (e: any) {
+          return { counts: {}, error: e.message };
+        }
+      }
 
       // --- Analysis (stub — requires V8 progress counter integration) ---
       case 'Analysis.createAnalysis':
