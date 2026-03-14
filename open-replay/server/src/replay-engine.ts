@@ -83,12 +83,11 @@ export class ReplayEngine extends EventEmitter {
   }
 
   private getNodePath(): string {
-    // If user explicitly set a node path, use it.
     if (this.opts.nodePath) return this.opts.nodePath;
-    // Default to the same Node.js that's running the server.
-    // (Patched node has different module resolution patterns which
-    //  causes event stream mismatch when recording was done with
-    //  a different Node.js version.)
+    // Prefer patched Node.js — it's compatible with DYLD driver + inspector.
+    // System Node.js v22 has DYLD+inspector conflict, patched v20 does not.
+    const patched = resolve(__dirname, '../../node/out/Release/node');
+    if (existsSync(patched)) return patched;
     return process.execPath;
   }
 

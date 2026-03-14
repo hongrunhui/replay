@@ -12,7 +12,7 @@ async function record(script, options) {
         console.error('Run: cd driver && bash build.sh');
         process.exit(1);
     }
-    const nodeBin = options.node || 'node';
+    const nodeBin = options.node || (0, utils_js_1.getNodePath)();
     const scriptPath = (0, node_path_1.resolve)(script);
     if (!(0, node_fs_1.existsSync)(scriptPath)) {
         console.error(`Script not found: ${scriptPath}`);

@@ -1,7 +1,7 @@
 import { spawn } from 'node:child_process';
 import { resolve, dirname } from 'node:path';
 import { existsSync } from 'node:fs';
-import { getDriverPath, getRecordingsDir } from './utils.js';
+import { getDriverPath, getRecordingsDir, getNodePath } from './utils.js';
 
 interface RecordOptions {
   output?: string;
@@ -16,7 +16,7 @@ export async function record(script: string, options: RecordOptions) {
     process.exit(1);
   }
 
-  const nodeBin = options.node || 'node';
+  const nodeBin = options.node || getNodePath();
   const scriptPath = resolve(script);
 
   if (!existsSync(scriptPath)) {

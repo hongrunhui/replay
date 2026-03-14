@@ -2,7 +2,7 @@ import { spawn } from 'node:child_process';
 import { resolve, join } from 'node:path';
 import { existsSync, readdirSync, readFileSync } from 'node:fs';
 import { homedir } from 'node:os';
-import { getDriverPath, getRecordingsDir } from './utils.js';
+import { getDriverPath, getRecordingsDir, getNodePath } from './utils.js';
 
 interface ReplayOptions {
   port?: string;
@@ -67,25 +67,22 @@ async function directReplay(recordingPath: string, options: ReplayOptions) {
     process.exit(1);
   }
 
-  const nodeBin = options.node || 'node';
+  const nodeBin = options.node || getNodePath();
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
   };
 
-  // Debug mode: run WITHOUT driver injection.
-  // DYLD_INTERPOSE fundamentally conflicts with Node.js inspector on macOS
-  // (the inspector's TCP socket operations interfere with intercepted read/write).
-  // Only --random-seed is used for deterministic Math.random().
-  const inspectPort = options.inspectPort || '9229';
-  if (!options.debug) {
-    env.OPENREPLAY_MODE = 'replay';
-    env.REPLAY_RECORDING = recordingPath;
-    if (process.platform === 'darwin') {
-      env.DYLD_INSERT_LIBRARIES = driverPath;
-    } else {
-      env.LD_PRELOAD = driverPath;
-    }
+  // Always inject driver — patched Node.js v20 supports driver + inspector coexistence.
+  // (System Node.js v22 had DYLD+inspector conflict, but patched v20 works.)
+  env.OPENREPLAY_MODE = 'replay';
+  env.REPLAY_RECORDING = recordingPath;
+  if (process.platform === 'darwin') {
+    env.DYLD_INSERT_LIBRARIES = driverPath;
+  } else {
+    env.LD_PRELOAD = driverPath;
   }
+
+  const inspectPort = options.inspectPort || '9229';
 
   const nodeArgs: string[] = [];
   if (meta.randomSeed) {
