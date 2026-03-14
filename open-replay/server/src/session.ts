@@ -4,6 +4,7 @@
 // and provides the data layer for the protocol handler.
 
 import { ReplayEngine, PauseState, parseRecordingHeader } from './replay-engine.js';
+import { CheckpointPool } from './checkpoint-pool.js';
 import { existsSync, readdirSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 import { homedir } from 'node:os';
@@ -18,6 +19,7 @@ export class ReplaySession {
   private _recordingPath: string;
   private _sessionId: string;
   private _engine: ReplayEngine | null = null;
+  private _checkpointPool: CheckpointPool | null = null;
   private _consoleMessages: ConsoleMessage[] = [];
   private _started = false;
   private _header: ReturnType<typeof parseRecordingHeader> | null = null;
@@ -161,7 +163,16 @@ export class ReplaySession {
     return { ...result, messages: this.getConsoleMessages() };
   }
 
+  get checkpointPool(): CheckpointPool {
+    if (!this._checkpointPool) {
+      this._checkpointPool = new CheckpointPool(this._recordingPath);
+    }
+    return this._checkpointPool;
+  }
+
   async destroy(): Promise<void> {
+    this._checkpointPool?.destroy();
+    this._checkpointPool = null;
     await this._engine?.stop();
     this._engine = null;
     console.log(`[session] Destroyed: ${this._sessionId}`);
