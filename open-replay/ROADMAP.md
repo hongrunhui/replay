@@ -11,8 +11,8 @@
 | 能力 | Replay.io | Open Replay | 差距 |
 |------|-----------|-------------|------|
 | 时间 (Date.now) | ✅ V8 内部 + libc 双重保障 | ✅ gettimeofday 拦截有效 | 基本持平 |
-| Math.random() | ✅ 直接补丁 V8 PRNG | ❌ V8 内部不走 arc4random | **Phase 6** |
-| crypto.randomBytes() | ✅ 补丁了 7 个 OpenSSL 文件 | ❌ OpenSSL RAND_bytes 未拦截 | **Phase 6** |
+| Math.random() | ✅ 直接补丁 V8 PRNG | ✅ --random-seed 确定性种子 | 已解决 |
+| crypto.randomBytes() | ✅ 补丁了 7 个 OpenSSL 文件 | ✅ RAND_bytes_ex DYLD_INTERPOSE | 已解决 |
 | 文件 I/O | ✅ 完整录制+回放（虚拟文件系统） | ⚠️ 录制有效但回放跳过 | **Phase 8** |
 | 网络 I/O | ✅ 请求/响应完整录制回放 | ❌ net.cc 禁用 | **Phase 7** |
 | 线程/事件循环 | ✅ 9 个 libuv 文件补丁 + 有序锁 | ❌ thread.cc 禁用 | 远期 |
