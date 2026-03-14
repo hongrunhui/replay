@@ -420,6 +420,15 @@ static void openreplay_auto_init() {
         }
         json += "\"";
       }
+
+      // Store the random seed (used for deterministic Math.random())
+      const char* seed = getenv("OPENREPLAY_RANDOM_SEED");
+      if (seed) {
+        if (script) json += ",";
+        json += "\"randomSeed\":";
+        json += seed;
+      }
+
       json += "}";
       RecordReplaySetMetadata(json.c_str());
     }

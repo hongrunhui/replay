@@ -32,9 +32,18 @@ async function record(script, options) {
     else {
         env.LD_PRELOAD = driverPath;
     }
+    // Generate a random seed for V8's Math.random() PRNG.
+    // This seed is passed via --random-seed and stored in the recording metadata.
+    // On replay, the same seed is used to produce identical Math.random() sequences.
+    // Generate a random seed for V8's Math.random() PRNG.
+    // Stored in metadata so replay can use the same seed.
+    const randomSeed = Math.floor(Math.random() * 2147483647) + 1;
+    env.OPENREPLAY_RANDOM_SEED = String(randomSeed);
+    // Pass script path explicitly (argv[1] is now --random-seed, not the script)
+    env.OPENREPLAY_SCRIPT = scriptPath;
     console.log(`Recording: ${scriptPath}`);
     console.log(`Driver: ${driverPath}`);
-    const child = (0, node_child_process_1.spawn)(nodeBin, [scriptPath], {
+    const child = (0, node_child_process_1.spawn)(nodeBin, [`--random-seed=${randomSeed}`, scriptPath], {
         env,
         stdio: 'inherit',
     });

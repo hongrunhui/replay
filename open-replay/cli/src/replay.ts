@@ -27,7 +27,8 @@ function resolveRecording(recording: string): string {
 }
 
 // Parse script path from recording metadata
-function getScriptPath(recordingPath: string): string | null {
+// Parse recording metadata (scriptPath, randomSeed, etc.)
+function getRecordingMetadata(recordingPath: string): { scriptPath?: string; randomSeed?: number } {
   try {
     const buf = readFileSync(recordingPath);
     let i = 64;
@@ -35,13 +36,12 @@ function getScriptPath(recordingPath: string): string | null {
       const type = buf[i];
       const dataLen = buf.readUInt32LE(i + 5);
       if (type === 0x20) {
-        const json = JSON.parse(buf.subarray(i + 9, i + 9 + dataLen).toString('utf8'));
-        return json.scriptPath || null;
+        return JSON.parse(buf.subarray(i + 9, i + 9 + dataLen).toString('utf8'));
       }
       i += 9 + dataLen;
     }
   } catch { /* ignore */ }
-  return null;
+  return {};
 }
 
 // Direct replay: run the script with the driver in replay mode
@@ -53,15 +53,15 @@ async function directReplay(recordingPath: string, options: ReplayOptions) {
     process.exit(1);
   }
 
-  const scriptPath = getScriptPath(recordingPath);
-  if (!scriptPath) {
+  const meta = getRecordingMetadata(recordingPath);
+  if (!meta.scriptPath) {
     console.error('No script path found in recording metadata.');
     console.error('This recording may have been created with an older driver version.');
     process.exit(1);
   }
 
-  if (!existsSync(scriptPath)) {
-    console.error(`Script not found: ${scriptPath}`);
+  if (!existsSync(meta.scriptPath)) {
+    console.error(`Script not found: ${meta.scriptPath}`);
     process.exit(1);
   }
 
@@ -78,10 +78,19 @@ async function directReplay(recordingPath: string, options: ReplayOptions) {
     env.LD_PRELOAD = driverPath;
   }
 
-  console.error(`Replaying: ${recordingPath}`);
-  console.error(`Script: ${scriptPath}`);
+  // Pass the same V8 random seed that was used during recording.
+  // This ensures Math.random() produces the identical sequence.
+  const nodeArgs: string[] = [];
+  if (meta.randomSeed) {
+    nodeArgs.push(`--random-seed=${meta.randomSeed}`);
+  }
+  nodeArgs.push(meta.scriptPath);
 
-  const child = spawn(nodeBin, [scriptPath], {
+  console.error(`Replaying: ${recordingPath}`);
+  console.error(`Script: ${meta.scriptPath}`);
+  if (meta.randomSeed) console.error(`Random seed: ${meta.randomSeed}`);
+
+  const child = spawn(nodeBin, nodeArgs, {
     env,
     stdio: ['inherit', 'inherit', 'pipe'],
   });
