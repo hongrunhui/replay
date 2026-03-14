@@ -49,6 +49,12 @@
 #include <unordered_set>
 #include <pthread.h>
 
+// Socket fd tracking (defined in net.cc)
+extern std::unordered_set<int> g_socket_fds;
+extern pthread_mutex_t g_socket_fd_mutex;
+bool IsSocketFd(int fd);  // defined in net.cc
+void UntrackSocketFd(int fd);  // defined in net.cc
+
 // --- Path filtering ---
 
 // Returns true if this path should be intercepted (user-space file I/O).
@@ -196,6 +202,28 @@ int my_openat(int dirfd, const char* path, int flags, ...) {
 ssize_t my_read(int fd, void* buf, size_t count) {
   InterceptGuard guard;
   if (!guard) return read(fd, buf, count);
+
+  // Socket reads: handle in both recording AND replay mode
+  if (IsSocketFd(fd)) {
+    if (RecordReplayIsRecording()) {
+      ssize_t ret = read(fd, buf, count);
+      int saved_errno = errno;
+      RecordReplayValue("sockread.ret", static_cast<uintptr_t>(ret));
+      if (ret > 0) RecordReplayBytes("sockread.data", buf, static_cast<size_t>(ret));
+      RecordReplayValue("sockread.errno", static_cast<uintptr_t>(saved_errno));
+      errno = saved_errno;
+      return ret;
+    }
+    if (RecordReplayIsReplaying()) {
+      ssize_t ret = static_cast<ssize_t>(RecordReplayValue("sockread.ret", 0));
+      if (ret > 0 && buf) RecordReplayBytes("sockread.data", buf, static_cast<size_t>(ret));
+      errno = static_cast<int>(RecordReplayValue("sockread.errno", 0));
+      return ret;
+    }
+    return read(fd, buf, count);
+  }
+
+  // File reads: recording-only (replay skips file interception)
   if (RecordReplayIsReplaying()) return read(fd, buf, count);
   if (!IsTrackedFd(fd)) return read(fd, buf, count);
 
@@ -222,6 +250,13 @@ ssize_t my_read(int fd, void* buf, size_t count) {
 int my_close(int fd) {
   InterceptGuard guard;
   if (!guard) return close(fd);
+
+  // Clean up socket fd tracking
+  if (IsSocketFd(fd)) {
+    UntrackSocketFd(fd);
+    return close(fd);
+  }
+
   if (RecordReplayIsReplaying()) return close(fd);
 
   bool was_tracked = IsTrackedFd(fd);
@@ -329,6 +364,29 @@ int my_lstat(const char* path, struct stat* buf) {
 }  // extern "C"
 
 // --- Platform registration ---
+// --- write() interception for socket fds ---
+// Only intercepts socket writes (for network replay). File writes pass through.
+ssize_t my_write_intercept(int fd, const void* buf, size_t count) {
+  InterceptGuard guard;
+  if (!guard) return write(fd, buf, count);
+
+  if (IsSocketFd(fd)) {
+    if (RecordReplayIsRecording()) {
+      ssize_t ret = write(fd, buf, count);
+      int saved_errno = errno;
+      RecordReplayValue("sockwrite.ret", static_cast<uintptr_t>(ret));
+      errno = saved_errno;
+      return ret;
+    }
+    if (RecordReplayIsReplaying()) {
+      // Do real write — kqueue needs real socket activity.
+      RecordReplayValue("sockwrite.ret", 0); // consume
+      return write(fd, buf, count);
+    }
+  }
+  return write(fd, buf, count);
+}
+
 /*
  * 【DYLD_INTERPOSE 注册】
  * macOS 特有机制：在 __DATA,__interpose section 中放置 {替换函数, 原始函数} 对。
@@ -340,6 +398,7 @@ int my_lstat(const char* path, struct stat* buf) {
 DYLD_INTERPOSE(my_open, open)
 DYLD_INTERPOSE(my_openat, openat)
 DYLD_INTERPOSE(my_read, read)
+DYLD_INTERPOSE(my_write_intercept, write)
 DYLD_INTERPOSE(my_close, close)
 DYLD_INTERPOSE(my_stat, stat)
 DYLD_INTERPOSE(my_fstat, fstat)
