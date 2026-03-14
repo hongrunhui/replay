@@ -243,16 +243,21 @@
 .eval-result { font-size: 12px; color: #b5cea8; padding: 2px 0; word-break: break-all; }
 
 /* Console */
-.console-msg { padding: 3px 0; font-size: 12px; border-bottom: 1px solid #2d2d2d; }
+.console-msg { display: flex; gap: 6px; padding: 3px 0; font-size: 12px; border-bottom: 1px solid #2d2d2d; align-items: baseline; }
+.console-icon { flex-shrink: 0; width: 14px; text-align: center; color: #888; }
+.console-text { word-break: break-all; }
 .console-msg.error { color: #f44747; }
+.console-msg.error .console-icon { color: #f44747; }
 .console-msg.warn { color: #cca700; }
+.console-msg.warn .console-icon { color: #cca700; }
 
 /* Call stack */
-.frame-row { padding: 3px 0; font-size: 12px; cursor: pointer; }
+.frame-row { display: flex; gap: 6px; padding: 3px 0; font-size: 12px; cursor: pointer; align-items: baseline; }
 .frame-row:hover { color: #569cd6; }
 .frame-row.active { color: #dcdcaa; font-weight: 600; }
+.frame-index { color: #555; font-size: 10px; min-width: 14px; text-align: right; }
 .frame-name { color: #dcdcaa; }
-.frame-loc { color: #666; margin-left: 6px; font-size: 11px; }
+.frame-loc { color: #666; font-size: 11px; }
 
 /* Connect panel */
 .connect-panel {
