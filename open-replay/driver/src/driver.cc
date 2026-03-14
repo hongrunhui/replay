@@ -3,6 +3,28 @@
 // This is the main implementation of the driver API.
 // It manages the global state and delegates to recorder/replayer.
 
+/*
+ * 【架构说明】Driver 是 Open Replay 的核心入口，通过 DYLD_INSERT_LIBRARIES
+ * 注入到 Node.js 进程中。它管理三种模式：IDLE / RECORDING / REPLAYING。
+ *
+ * 录制时：拦截系统调用（时间、随机数、文件I/O），将返回值写入 .orec 文件。
+ * 回放时：从 .orec 文件读取事先录制的返回值，替代真实系统调用的结果，
+ *         使程序执行路径与录制时完全一致（确定性回放）。
+ *
+ * 关键设计约束：
+ * 1. 全局对象必须用堆分配（new），不能用 static 局部/全局对象。
+ *    原因：__attribute__((constructor)) 可能在 C++ 静态构造函数之前执行，
+ *    如果 RecordingWriter 是 static 对象，其内部的 mutex/vector 可能还未初始化。
+ *
+ * 2. 全局锁必须用 pthread_mutex_t + PTHREAD_MUTEX_INITIALIZER，不能用 std::mutex。
+ *    原因同上：std::mutex 的构造函数可能还没跑过，导致 "Invalid argument" 崩溃。
+ *
+ * 3. 模式切换的顺序至关重要：
+ *    - 录制开始：先 Open writer，再设 g_mode = RECORDING（避免拦截 writer 自身的 I/O）
+ *    - 录制结束：先设 g_mode = IDLE，再 Close writer（避免拦截 close/write）
+ *    这是因为 DYLD_INTERPOSE 会拦截同一进程中所有 image 的系统调用。
+ */
+
 #include "driver.h"
 #include "format/recording.h"
 #include "checkpoint/checkpoint.h"
@@ -24,7 +46,12 @@
 #include <unistd.h>
 #endif
 
-// Global intercept depth counter — shared across all interception TUs
+/*
+ * 【重入深度计数器】所有拦截编译单元（fs.cc, time.cc, net.cc 等）共享此变量。
+ * 当 g_intercept_depth > 0 时，说明当前正在执行拦截逻辑内部，
+ * 此时任何新的系统调用都不应该被再次拦截，否则会无限递归。
+ * 声明为 extern（在 common.h 中），确保所有 TU 看到的是同一个实例。
+ */
 int g_intercept_depth = 0;
 
 namespace openreplay {
@@ -56,6 +83,13 @@ static CheckpointManager& checkpoints() {
   return *g_checkpoints_ptr;
 }
 
+/*
+ * 【V8 进度计数器】这两个变量是 driver 与 V8 引擎通信的桥梁。
+ * g_progress_counter：V8 的 IncExecutionProgressCounter 字节码每执行一次就 +1，
+ *   代表程序执行到了"第几步"。回放时用它来精确定位断点位置。
+ * g_target_progress：回放服务器设定的目标进度，当 counter 达到 target 时触发暂停。
+ * V8 通过 dlsym 获取这两个变量的地址（见 patches/node/node-recordreplay.cc）。
+ */
 static uint64_t g_progress_counter = 0;
 static uint64_t g_target_progress = 0;
 
@@ -205,6 +239,14 @@ int RecordReplayIsReplaying() {
   return g_mode == Mode::REPLAYING ? 1 : 0;
 }
 
+/*
+ * 【事件录制/回放的核心 API】
+ * RecordReplayValue / RecordReplayBytes / RecordReplayString
+ *
+ * "why" 参数是调用点的语义标识（如 "open", "read.ret", "gettimeofday"），
+ * 经 FNV 哈希后存入事件流。回放时，Reader 按相同的 why_hash 查找下一个匹配事件，
+ * 实现"按语义对齐"而非"按序号对齐"——这使得录制和回放可以容忍少量事件顺序差异。
+ */
 uintptr_t RecordReplayValue(const char* why, uintptr_t value) {
   if (g_mode == Mode::RECORDING) {
     writer().WriteEvent(EventType::VALUE, why, &value, sizeof(value));
@@ -312,6 +354,17 @@ void RecordReplaySetMetadata(const char* json) {
 // ============================================================
 // Auto-init via environment variables
 // ============================================================
+/*
+ * 【自动初始化机制】
+ * 通过 __attribute__((constructor)) 在 dylib 加载时自动执行。
+ * 读取 OPENREPLAY_MODE 环境变量决定进入录制/回放模式。
+ *
+ * 录制模式还会收集元数据（脚本路径、argv），写入 METADATA 事件。
+ * 脚本路径会 realpath() 解析为绝对路径，确保回放时不受 cwd 影响。
+ *
+ * 注意：constructor 内不能调用 dlsym 查找 V8 符号，
+ * 因为此时 V8 尚未初始化，dlsym 会死锁（dyld 加载锁重入）。
+ */
 
 static void openreplay_shutdown_handler() {
   RecordReplayDetach();

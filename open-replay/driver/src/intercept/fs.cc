@@ -9,6 +9,35 @@
 // Fd tracking: open/openat record which fds are "user fds" so that read/close
 // only intercept those fds (not internal Node.js fds).
 
+/*
+ * 【文件系统拦截策略】
+ *
+ * 当前策略：仅录制模式拦截，回放模式跳过所有文件系统调用。
+ *
+ * 为什么回放模式不拦截文件系统？
+ * ──────────────────────────
+ * Node.js 启动时会执行大量文件操作（require 模块解析、stat 检查、读取 .js 文件），
+ * 这些操作的顺序和数量取决于 cwd（工作目录）和 node_modules 结构。
+ * 如果回放时 cwd 与录制时不同（很常见），文件操作序列会错位，
+ * 导致事件流对齐失败（读到错误的录制数据）。
+ *
+ * 未来计划：实现"虚拟文件系统"——录制时把文件内容也存入 .orec，
+ * 回放时完全从录制数据中提供文件内容，彻底消除对真实文件系统的依赖。
+ *
+ * 路径过滤的目的：
+ * ──────────────
+ * 即使在录制模式，也跳过系统路径（/usr, /System, /Library 等）。
+ * 这些是 Node.js 内部模块加载产生的 I/O，录制它们不仅浪费空间，
+ * 还会让事件流变得极其庞大（一次 require 可能触发几百次 stat/open）。
+ * 只录制用户空间的文件操作（用户脚本读写的文件）。
+ *
+ * Fd 追踪机制：
+ * ────────────
+ * open/openat 返回的 fd 加入 g_tracked_fds 集合。
+ * 后续的 read/close/fstat 只拦截被追踪的 fd，
+ * 避免拦截 Node.js 内部打开的 fd（如 libuv 的 eventfd、pipe 等）。
+ */
+
 #include "intercept/common.h"
 
 #include <cstdarg>
