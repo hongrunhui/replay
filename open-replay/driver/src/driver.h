@@ -52,7 +52,8 @@ int RecordReplayIsReplaying();
 uintptr_t RecordReplayValue(const char* why, uintptr_t value);
 
 // Record or replay a byte buffer.
-void RecordReplayBytes(const char* why, void* buf, size_t size);
+// Returns 1 if event was found and data was written, 0 if events exhausted.
+int RecordReplayBytes(const char* why, void* buf, size_t size);
 
 // Record or replay a string.
 void RecordReplayString(const char* why, std::string& str);

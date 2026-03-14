@@ -263,16 +263,21 @@ uintptr_t RecordReplayValue(const char* why, uintptr_t value) {
   return value;
 }
 
-void RecordReplayBytes(const char* why, void* buf, size_t size) {
+int RecordReplayBytes(const char* why, void* buf, size_t size) {
   if (g_mode == Mode::RECORDING) {
     writer().WriteEvent(EventType::BYTES, why, buf, size);
-  } else if (g_mode == Mode::REPLAYING) {
+    return 1;
+  }
+  if (g_mode == Mode::REPLAYING) {
     const auto* ev = reader().NextEvent(why);
     if (ev && buf && !ev->data.empty()) {
       size_t copy_len = ev->data.size() < size ? ev->data.size() : size;
       memcpy(buf, ev->data.data(), copy_len);
+      return 1;  // event found and applied
     }
+    return 0;  // events exhausted — caller should fall back
   }
+  return 0;
 }
 
 void RecordReplayString(const char* why, std::string& str) {
