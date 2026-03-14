@@ -57,9 +57,13 @@ export class ReplayEngine extends EventEmitter {
   }
 
   private getNodePath(): string {
-    const patched = this.opts.nodePath ||
-      resolve(__dirname, '../../node/out/Release/node');
-    return existsSync(patched) ? patched : process.execPath;
+    // If user explicitly set a node path, use it.
+    if (this.opts.nodePath) return this.opts.nodePath;
+    // Default to the same Node.js that's running the server.
+    // (Patched node has different module resolution patterns which
+    //  causes event stream mismatch when recording was done with
+    //  a different Node.js version.)
+    return process.execPath;
   }
 
   private getDriverPath(): string {
@@ -70,7 +74,8 @@ export class ReplayEngine extends EventEmitter {
     return join(buildBase, dylib);
   }
 
-  async start(): Promise<void> {
+  // Build the env/args common to start() and run()
+  private buildSpawnConfig(): { nodePath: string; env: NodeJS.ProcessEnv; scriptPath?: string } {
     const nodePath = this.getNodePath();
     const driverPath = this.getDriverPath();
 
@@ -92,12 +97,36 @@ export class ReplayEngine extends EventEmitter {
       env.LD_PRELOAD = driverPath;
     }
 
-    // Use a random port to avoid conflicts
-    this.inspectorPort = 9200 + Math.floor(Math.random() * 800);
-
-    // Determine the script to run: from recording metadata or options
     const header = parseRecordingHeader(this.opts.recordingPath);
     const scriptPath = this.opts.scriptPath || header.scriptPath;
+    return { nodePath, env, scriptPath };
+  }
+
+  // Run replay without debugger — just execute and capture output.
+  async run(): Promise<{ exitCode: number; stdout: string; stderr: string }> {
+    const { nodePath, env, scriptPath } = this.buildSpawnConfig();
+    if (!scriptPath) throw new Error('No script path in recording metadata');
+
+    return new Promise((resolve) => {
+      let stdout = '';
+      let stderr = '';
+      const proc = spawn(nodePath, [scriptPath], { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      proc.stdout?.on('data', (d: Buffer) => { stdout += d.toString(); this.emit('stdout', d.toString()); });
+      proc.stderr?.on('data', (d: Buffer) => { stderr += d.toString(); this.emit('stderr', d.toString()); });
+      proc.on('exit', (code) => {
+        this.emit('exit', code ?? 0);
+        resolve({ exitCode: code ?? 0, stdout, stderr });
+      });
+      this.child = proc;
+    });
+  }
+
+  // Start replay with debugger attached (for stepping/breakpoints).
+  async start(): Promise<void> {
+    const { nodePath, env, scriptPath } = this.buildSpawnConfig();
+
+    this.inspectorPort = 9200 + Math.floor(Math.random() * 800);
+
     const nodeArgs = scriptPath
       ? [`--inspect-brk=${this.inspectorPort}`, scriptPath]
       : [`--inspect-brk=${this.inspectorPort}`, '-e', 'void 0'];

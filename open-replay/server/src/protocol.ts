@@ -74,6 +74,12 @@ export class CDPProtocolHandler {
         return { started: true };
       }
 
+      // Run replay without debugger — just execute the script and capture output
+      case 'Recording.run': {
+        const result = await this.session.runReplay();
+        return result;
+      }
+
       case 'Recording.resume': {
         if (engine) await engine.resume();
         return {};

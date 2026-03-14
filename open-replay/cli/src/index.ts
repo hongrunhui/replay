@@ -2,7 +2,7 @@
 import { Command } from 'commander';
 import { record } from './record.js';
 import { list } from './list.js';
-import { serve } from './replay.js';
+import { replay } from './replay.js';
 import { deleteRecording } from './delete.js';
 
 const program = new Command();
@@ -26,11 +26,12 @@ program
   .action(list);
 
 program
-  .command('serve <recording>')
-  .description('Start replay server for a recording')
-  .option('-p, --port <port>', 'WebSocket port', '1234')
-  .option('--devtools', 'Also start DevTools UI')
-  .action(serve);
+  .command('replay <recording>')
+  .description('Replay a recording (UUID, partial UUID, or path)')
+  .option('-p, --port <port>', 'WebSocket port (with --server)', '1234')
+  .option('--server', 'Start a WebSocket replay server instead of direct replay')
+  .option('--node <path>', 'Path to Node.js binary')
+  .action(replay);
 
 program
   .command('delete <recording>')

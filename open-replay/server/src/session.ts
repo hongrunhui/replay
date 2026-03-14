@@ -121,6 +121,25 @@ export class ReplaySession {
     return this._engine?.isPaused() ?? false;
   }
 
+  // Run the replay without debugger — just execute and capture output
+  async runReplay(): Promise<{ exitCode: number; stdout: string; stderr: string; messages: unknown[] }> {
+    const engine = new ReplayEngine({ recordingPath: this._recordingPath });
+    engine.on('stdout', (msg: string) => {
+      for (const line of msg.split('\n')) {
+        if (line.trim()) this._consoleMessages.push({ level: 'log', text: line.trim(), timestamp: Date.now() });
+      }
+    });
+    engine.on('stderr', (msg: string) => {
+      if (!msg.startsWith('[openreplay]')) {
+        for (const line of msg.split('\n')) {
+          if (line.trim()) this._consoleMessages.push({ level: 'error', text: line.trim(), timestamp: Date.now() });
+        }
+      }
+    });
+    const result = await engine.run();
+    return { ...result, messages: this.getConsoleMessages() };
+  }
+
   async destroy(): Promise<void> {
     await this._engine?.stop();
     this._engine = null;
