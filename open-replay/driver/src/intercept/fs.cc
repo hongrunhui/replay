@@ -398,7 +398,10 @@ ssize_t my_write_intercept(int fd, const void* buf, size_t count) {
 DYLD_INTERPOSE(my_open, open)
 DYLD_INTERPOSE(my_openat, openat)
 DYLD_INTERPOSE(my_read, read)
-DYLD_INTERPOSE(my_write_intercept, write)
+// write interception disabled: Node.js uses send() for sockets (handled in net.cc)
+// and write() for stdout/stderr/files (don't need interception).
+// Enabling it causes issues with inspector and internal Node.js I/O.
+// DYLD_INTERPOSE(my_write_intercept, write)
 DYLD_INTERPOSE(my_close, close)
 DYLD_INTERPOSE(my_stat, stat)
 DYLD_INTERPOSE(my_fstat, fstat)

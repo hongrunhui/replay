@@ -25,6 +25,7 @@
 #include <cstring>
 #include <cerrno>
 #include <sys/socket.h>
+#include <netinet/in.h>
 #include <netdb.h>
 #include <unordered_set>
 #include <pthread.h>
@@ -55,22 +56,37 @@ bool IsSocketFd(int fd) {
   return result;
 }
 
-extern "C" {
-
-// --- socket() — track which fds are sockets ---
-int my_socket(int domain, int type, int protocol) {
-  int fd = socket(domain, type, protocol);
-  if (fd >= 0 && RecordReplayIsRecordingOrReplaying()) {
-    TrackSocketFd(fd);
+// Check if sockaddr is loopback (127.x.x.x or ::1).
+// Loopback = inspector, local services — should NOT be intercepted.
+static bool IsLoopbackAddr(const struct sockaddr* addr) {
+  if (!addr) return false;
+  if (addr->sa_family == AF_INET) {
+    auto* in4 = reinterpret_cast<const struct sockaddr_in*>(addr);
+    return (ntohl(in4->sin_addr.s_addr) & 0xFF000000) == 0x7F000000;
   }
-  return fd;
+  if (addr->sa_family == AF_INET6) {
+    auto* in6 = reinterpret_cast<const struct sockaddr_in6*>(addr);
+    return memcmp(&in6->sin6_addr, &in6addr_loopback, sizeof(struct in6_addr)) == 0;
+  }
+  return false;
 }
 
-// --- connect() ---
+extern "C" {
+
+// socket() — do NOT track here. Only track on connect() to non-loopback.
+// Server sockets (inspector, etc.) bind+listen, never connect, so they stay untracked.
+int my_socket(int domain, int type, int protocol) {
+  return socket(domain, type, protocol);
+}
+
+// connect() — track the fd as an intercepted socket ONLY for non-loopback connections.
 int my_connect(int sockfd, const struct sockaddr* addr, socklen_t addrlen) {
   InterceptGuard guard;
   if (!guard) return connect(sockfd, addr, addrlen);
-  if (!IsSocketFd(sockfd)) return connect(sockfd, addr, addrlen);
+  if (IsLoopbackAddr(addr)) return connect(sockfd, addr, addrlen);
+
+  // Track this fd as a client socket to an external host
+  if (RecordReplayIsRecordingOrReplaying()) TrackSocketFd(sockfd);
 
   if (RecordReplayIsRecording()) {
     int ret = connect(sockfd, addr, addrlen);
