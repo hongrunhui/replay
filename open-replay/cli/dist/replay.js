@@ -1,0 +1,128 @@
+"use strict";
+Object.defineProperty(exports, "__esModule", { value: true });
+exports.serve = void 0;
+exports.replay = replay;
+const node_child_process_1 = require("node:child_process");
+const node_path_1 = require("node:path");
+const node_fs_1 = require("node:fs");
+const utils_js_1 = require("./utils.js");
+// Resolve recording path from UUID or path
+function resolveRecording(recording) {
+    if ((0, node_fs_1.existsSync)(recording))
+        return (0, node_path_1.resolve)(recording);
+    // Try as UUID
+    const dir = (0, utils_js_1.getRecordingsDir)();
+    const withExt = recording.endsWith('.orec') ? recording : `${recording}.orec`;
+    const candidate = (0, node_path_1.join)(dir, withExt);
+    if ((0, node_fs_1.existsSync)(candidate))
+        return candidate;
+    // Try partial match
+    if ((0, node_fs_1.existsSync)(dir)) {
+        const match = (0, node_fs_1.readdirSync)(dir).find(f => f.startsWith(recording) && f.endsWith('.orec'));
+        if (match)
+            return (0, node_path_1.join)(dir, match);
+    }
+    return recording; // let it fail with a proper error
+}
+// Parse script path from recording metadata
+function getScriptPath(recordingPath) {
+    try {
+        const buf = (0, node_fs_1.readFileSync)(recordingPath);
+        let i = 64;
+        while (i + 9 <= buf.length - 32) {
+            const type = buf[i];
+            const dataLen = buf.readUInt32LE(i + 5);
+            if (type === 0x20) {
+                const json = JSON.parse(buf.subarray(i + 9, i + 9 + dataLen).toString('utf8'));
+                return json.scriptPath || null;
+            }
+            i += 9 + dataLen;
+        }
+    }
+    catch { /* ignore */ }
+    return null;
+}
+// Direct replay: run the script with the driver in replay mode
+async function directReplay(recordingPath, options) {
+    const driverPath = (0, utils_js_1.getDriverPath)();
+    if (!(0, node_fs_1.existsSync)(driverPath)) {
+        console.error(`Driver not found: ${driverPath}`);
+        console.error('Run: cd driver && bash build.sh');
+        process.exit(1);
+    }
+    const scriptPath = getScriptPath(recordingPath);
+    if (!scriptPath) {
+        console.error('No script path found in recording metadata.');
+        console.error('This recording may have been created with an older driver version.');
+        process.exit(1);
+    }
+    if (!(0, node_fs_1.existsSync)(scriptPath)) {
+        console.error(`Script not found: ${scriptPath}`);
+        process.exit(1);
+    }
+    const nodeBin = options.node || 'node';
+    const env = {
+        ...process.env,
+        OPENREPLAY_MODE: 'replay',
+        REPLAY_RECORDING: recordingPath,
+    };
+    if (process.platform === 'darwin') {
+        env.DYLD_INSERT_LIBRARIES = driverPath;
+    }
+    else {
+        env.LD_PRELOAD = driverPath;
+    }
+    console.error(`Replaying: ${recordingPath}`);
+    console.error(`Script: ${scriptPath}`);
+    const child = (0, node_child_process_1.spawn)(nodeBin, [scriptPath], {
+        env,
+        stdio: ['inherit', 'inherit', 'pipe'],
+    });
+    // Filter out openreplay messages from stderr
+    child.stderr?.on('data', (data) => {
+        const text = data.toString();
+        for (const line of text.split('\n')) {
+            if (line.trim() && !line.startsWith('[openreplay]')) {
+                process.stderr.write(line + '\n');
+            }
+        }
+    });
+    child.on('close', (code) => {
+        process.exit(code ?? 0);
+    });
+    child.on('error', (err) => {
+        console.error(`Failed to start: ${err.message}`);
+        process.exit(1);
+    });
+}
+// Server replay: start WebSocket server for programmatic access
+async function serverReplay(recordingPath, options) {
+    const port = parseInt(options.port || '1234', 10);
+    // Dynamic import to avoid compile-time dependency on server package
+    let startServer;
+    try {
+        const mod = await Function('p', 'return import(p)')('../../server/src/index.js');
+        startServer = mod.startServer;
+    }
+    catch {
+        console.error('Server module not available. Install server dependencies first.');
+        process.exit(1);
+    }
+    await startServer({ port, recordingPath });
+}
+async function replay(recording, options) {
+    const recordingPath = resolveRecording(recording);
+    if (!(0, node_fs_1.existsSync)(recordingPath)) {
+        console.error(`Recording not found: ${recordingPath}`);
+        process.exit(1);
+    }
+    if (options.server) {
+        await serverReplay(recordingPath, options);
+    }
+    else {
+        await directReplay(recordingPath, options);
+    }
+}
+// Keep old name for backwards compatibility
+exports.serve = replay;
+//# sourceMappingURL=replay.js.map

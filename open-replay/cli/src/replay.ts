@@ -109,8 +109,17 @@ async function directReplay(recordingPath: string, options: ReplayOptions) {
 // Server replay: start WebSocket server for programmatic access
 async function serverReplay(recordingPath: string, options: ReplayOptions) {
   const port = parseInt(options.port || '1234', 10);
-  // Dynamic import the server module
-  const { startServer } = await import('../../server/src/index.js');
+  // Dynamic import to avoid compile-time dependency on server package
+  let startServer: (opts: { port: number; recordingPath: string }) => Promise<unknown>;
+  try {
+    const mod = await (Function('p', 'return import(p)') as (p: string) => Promise<any>)(
+      '../../server/src/index.js'
+    );
+    startServer = mod.startServer;
+  } catch {
+    console.error('Server module not available. Install server dependencies first.');
+    process.exit(1);
+  }
   await startServer({ port, recordingPath });
 }
 
