@@ -340,11 +340,24 @@ static void openreplay_auto_init() {
 #endif
       std::string json = "{";
 
-      // Script path: argv[1] for `node script.js` invocations
+      // Script path: argv[1] for `node script.js` invocations.
+      // Resolve to absolute path so replay can find the script regardless of cwd.
       const char* script_env = getenv("OPENREPLAY_SCRIPT");
-      const char* script = script_env;
-      if (!script && argc >= 2) script = argv[1];
+      const char* script_raw = script_env;
+      if (!script_raw && argc >= 2) script_raw = argv[1];
 
+      // Resolve to absolute path
+      std::string script_abs;
+      if (script_raw) {
+        char resolved[4096] = {};
+        if (realpath(script_raw, resolved)) {
+          script_abs = resolved;
+        } else {
+          script_abs = script_raw;  // fallback to raw
+        }
+      }
+
+      const char* script = script_abs.empty() ? nullptr : script_abs.c_str();
       if (script) {
         json += "\"scriptPath\":\"";
         for (const char* c = script; *c; c++) {

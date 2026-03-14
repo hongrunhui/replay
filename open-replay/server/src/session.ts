@@ -67,7 +67,10 @@ export class ReplaySession {
     this._engine = new ReplayEngine({ recordingPath: this._recordingPath });
 
     this._engine.on('stderr', (msg: string) => {
-      if (msg.startsWith('[openreplay]')) return;
+      // Always log child stderr for debugging (filter out openreplay noise)
+      if (!msg.startsWith('[openreplay]')) {
+        process.stderr.write(`[engine stderr] ${msg}`);
+      }
       for (const line of msg.split('\n')) {
         if (line.trim()) {
           this._consoleMessages.push({ level: 'log', text: line.trim(), timestamp: Date.now() });
