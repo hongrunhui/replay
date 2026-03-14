@@ -26,9 +26,14 @@ export function list(options: ListOptions) {
   console.log('  ID                                    Size      Date');
   console.log('  ' + '-'.repeat(70));
 
-  for (const file of files.sort()) {
+  // Sort by modification time, newest first
+  const entries = files.map(file => {
     const fullPath = join(dir, file);
     const stat = statSync(fullPath);
+    return { file, stat };
+  }).sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+
+  for (const { file, stat } of entries) {
     const id = file.replace('.orec', '');
     const size = formatSize(stat.size);
     const date = stat.mtime.toISOString().replace('T', ' ').slice(0, 19);

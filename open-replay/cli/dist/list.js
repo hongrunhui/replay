@@ -21,9 +21,13 @@ function list(options) {
     console.log(`Recordings in ${dir}:\n`);
     console.log('  ID                                    Size      Date');
     console.log('  ' + '-'.repeat(70));
-    for (const file of files.sort()) {
+    // Sort by modification time, newest first
+    const entries = files.map(file => {
         const fullPath = (0, node_path_1.join)(dir, file);
         const stat = (0, node_fs_1.statSync)(fullPath);
+        return { file, stat };
+    }).sort((a, b) => b.stat.mtimeMs - a.stat.mtimeMs);
+    for (const { file, stat } of entries) {
         const id = file.replace('.orec', '');
         const size = formatSize(stat.size);
         const date = stat.mtime.toISOString().replace('T', ' ').slice(0, 19);

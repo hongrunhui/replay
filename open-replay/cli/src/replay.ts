@@ -72,20 +72,18 @@ async function directReplay(recordingPath: string, options: ReplayOptions) {
     ...process.env as Record<string, string>,
   };
 
-  // Debug mode: run WITHOUT driver injection (inspector conflicts with
-  // DYLD_INTERPOSE in REPLAYING mode). Only --random-seed is used for
-  // deterministic Math.random(). Time and crypto won't be replayed but
-  // code paths stay the same if they don't branch on time values.
-  const inspectPort = options.inspectPort || '9229';
-  if (!options.debug) {
-    env.OPENREPLAY_MODE = 'replay';
-    env.REPLAY_RECORDING = recordingPath;
-    if (process.platform === 'darwin') {
-      env.DYLD_INSERT_LIBRARIES = driverPath;
-    } else {
-      env.LD_PRELOAD = driverPath;
-    }
+  // Inject driver for both normal and debug mode.
+  // The time extrapolation mechanism handles event exhaustion gracefully,
+  // so the inspector can coexist with REPLAYING mode.
+  env.OPENREPLAY_MODE = 'replay';
+  env.REPLAY_RECORDING = recordingPath;
+  if (process.platform === 'darwin') {
+    env.DYLD_INSERT_LIBRARIES = driverPath;
+  } else {
+    env.LD_PRELOAD = driverPath;
   }
+
+  const inspectPort = options.inspectPort || '9229';
 
   const nodeArgs: string[] = [];
   if (meta.randomSeed) {
