@@ -284,8 +284,13 @@ uintptr_t RecordReplayValue(const char* why, uintptr_t value) {
   if (g_mode == Mode::REPLAYING) {
     g_replay_event_count++;
 
-    // Periodically create fork checkpoints during replay
-    if (g_replay_event_count % FORK_CHECKPOINT_INTERVAL == 0 &&
+    // Fork checkpoints disabled by default — fork() on macOS corrupts
+    // kqueue state, which breaks Node.js inspector. Enable via
+    // OPENREPLAY_FORK_CHECKPOINTS=1 env var for non-inspector use cases.
+    static bool fork_enabled = getenv("OPENREPLAY_FORK_CHECKPOINTS") != nullptr;
+    if (fork_enabled &&
+        g_replay_event_count > 50000 &&
+        g_replay_event_count % FORK_CHECKPOINT_INTERVAL == 0 &&
         g_fork_checkpoint_count < MAX_FORK_CHECKPOINTS) {
       RecordReplayForkCheckpoint();
     }

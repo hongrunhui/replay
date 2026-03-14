@@ -64,18 +64,21 @@ async function directReplay(recordingPath, options) {
     const env = {
         ...process.env,
     };
-    // Inject driver for both normal and debug mode.
-    // The time extrapolation mechanism handles event exhaustion gracefully,
-    // so the inspector can coexist with REPLAYING mode.
-    env.OPENREPLAY_MODE = 'replay';
-    env.REPLAY_RECORDING = recordingPath;
-    if (process.platform === 'darwin') {
-        env.DYLD_INSERT_LIBRARIES = driverPath;
-    }
-    else {
-        env.LD_PRELOAD = driverPath;
-    }
+    // Debug mode: run WITHOUT driver injection.
+    // DYLD_INTERPOSE fundamentally conflicts with Node.js inspector on macOS
+    // (the inspector's TCP socket operations interfere with intercepted read/write).
+    // Only --random-seed is used for deterministic Math.random().
     const inspectPort = options.inspectPort || '9229';
+    if (!options.debug) {
+        env.OPENREPLAY_MODE = 'replay';
+        env.REPLAY_RECORDING = recordingPath;
+        if (process.platform === 'darwin') {
+            env.DYLD_INSERT_LIBRARIES = driverPath;
+        }
+        else {
+            env.LD_PRELOAD = driverPath;
+        }
+    }
     const nodeArgs = [];
     if (meta.randomSeed) {
         nodeArgs.push(`--random-seed=${meta.randomSeed}`);
