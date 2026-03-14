@@ -209,25 +209,32 @@ export class CDPProtocolHandler {
 
       case 'Pause.getScope': {
         const pause = this.session.getPauseState();
-        if (!pause || !engine) return { scope: { bindings: [] }, data: {} };
+        if (!pause || !engine) return { scopes: [], data: {} };
         const frameId = params.frameId as string;
         const frame = pause.frames.find(f => f.callFrameId === frameId);
-        if (!frame) return { scope: { bindings: [] }, data: {} };
+        if (!frame) return { scopes: [], data: {} };
 
-        const bindings: Array<{ name: string; value: unknown }> = [];
+        const scopes: Array<{ type: string; bindings: Array<{ name: string; value: unknown; type: string }> }> = [];
         for (const scope of frame.scopeChain || []) {
-          if (scope.type === 'local' && scope.object?.objectId) {
-            try {
-              const props = await engine.getProperties(scope.object.objectId) as any[];
-              for (const p of props) {
-                if (p.enumerable !== false) {
-                  bindings.push({ name: p.name, value: p.value?.value ?? p.value?.description });
-                }
-              }
-            } catch { /* ignore */ }
-          }
+          // Skip global scope (too many entries)
+          if (scope.type === 'global') continue;
+          if (!scope.object?.objectId) continue;
+          try {
+            const props = await engine.getProperties(scope.object.objectId) as any[];
+            const SKIP_VARS = new Set(['exports', 'require', 'module', '__filename', '__dirname', 'arguments']);
+            const bindings = props
+              .filter((p: any) => p.name && !p.name.startsWith('__') && !SKIP_VARS.has(p.name))
+              .map((p: any) => ({
+                name: p.name,
+                value: p.value?.value ?? p.value?.description ?? 'undefined',
+                type: p.value?.type || 'unknown',
+              }));
+            if (bindings.length > 0) {
+              scopes.push({ type: scope.type || 'unknown', bindings });
+            }
+          } catch { /* ignore */ }
         }
-        return { scope: { bindings }, data: {} };
+        return { scopes, data: {} };
       }
 
       case 'Pause.evaluateInFrame': {

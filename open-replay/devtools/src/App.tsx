@@ -109,18 +109,14 @@ export function App() {
       const result = await client.runToLine(file, line);
       if (result.paused && result.frames?.length) {
         const topFrame = result.frames[0];
-        // Evaluate local variables
+        // Get scope variables via CDP
         let vars: Record<string, unknown> = {};
         try {
-          const evalResult = await client.evaluateInFrame(
-            topFrame.frameId,
-            '(() => { try { const o = {}; for (const k of Object.keys(arguments.callee.caller ? {} : {})) {} return JSON.stringify(o); } catch { return "{}"; } })()'
-          );
-          // Simple approach: evaluate common variable names
-          const varEval = await client.evaluateInFrame(topFrame.frameId,
-            '(() => { try { return JSON.stringify(Object.fromEntries(Object.entries({...this}).slice(0, 20))); } catch(e) { return "{}"; } })()');
-          if (varEval?.result?.value) {
-            try { vars = JSON.parse(varEval.result.value); } catch {}
+          const scopes = await client.getScope(topFrame.frameId);
+          for (const scope of scopes) {
+            for (const binding of scope.bindings) {
+              vars[binding.name] = binding.value;
+            }
           }
         } catch {}
 

@@ -103,6 +103,11 @@ export class ReplayClient {
     return this.send('Recording.runToLine', { file, line });
   }
 
+  async getScope(frameId: string): Promise<Array<{ type: string; bindings: Array<{ name: string; value: unknown; type: string }> }>> {
+    const r = await this.send('Pause.getScope', { frameId });
+    return r?.scopes || [];
+  }
+
   async evaluateInFrame(frameId: string, expression: string): Promise<any> {
     return this.send('Pause.evaluateInFrame', { frameId, expression });
   }
