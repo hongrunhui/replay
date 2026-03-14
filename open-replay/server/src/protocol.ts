@@ -251,9 +251,22 @@ export class CDPProtocolHandler {
 
       case 'Pause.getObjectPreview': {
         if (!engine) return { data: {} };
+        const objectId = params.objectId as string || params.object as string;
+        if (!objectId) return { data: {} };
         try {
-          const props = await engine.getProperties(params.objectId as string);
-          return { data: { properties: props } };
+          const r = await engine.sendCDP('Runtime.getProperties', {
+            objectId,
+            ownProperties: true,
+            generatePreview: true,
+          }) as any;
+          const properties = (r?.result || []).map((p: any) => ({
+            name: p.name,
+            value: p.value?.value ?? p.value?.description ?? 'undefined',
+            type: p.value?.type || 'unknown',
+            subtype: p.value?.subtype,
+            objectId: p.value?.objectId,  // for nested expansion
+          }));
+          return { properties, data: {} };
         } catch {
           return { data: {} };
         }

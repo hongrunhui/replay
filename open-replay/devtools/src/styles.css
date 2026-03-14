@@ -203,9 +203,19 @@
 .hover-value { color: #ce9178; }
 
 /* Variables panel */
-.var-row { display: flex; gap: 8px; padding: 3px 0; font-size: 12px; }
-.var-name { color: #9cdcfe; }
+.var-row { display: flex; align-items: baseline; gap: 4px; padding: 2px 0; font-size: 12px; }
+.var-expand { width: 14px; cursor: pointer; color: #888; font-size: 10px; flex-shrink: 0; text-align: center; }
+.var-expand:hover { color: #d4d4d4; }
+.var-expand-empty { width: 14px; flex-shrink: 0; }
+.var-name { color: #9cdcfe; flex-shrink: 0; }
+.var-eq { color: #666; }
 .var-value { color: #ce9178; word-break: break-all; }
+.var-type-number { color: #b5cea8; }
+.var-type-boolean { color: #569cd6; }
+.var-type-string { color: #ce9178; }
+.var-type-object { color: #4ec9b0; }
+.var-type-function { color: #dcdcaa; font-style: italic; }
+.var-type-undefined { color: #666; }
 
 /* Evaluate input */
 .eval-input { display: flex; gap: 4px; padding: 6px 0; }
