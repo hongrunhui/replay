@@ -14,7 +14,7 @@
 | Math.random() | ✅ 直接补丁 V8 PRNG | ✅ --random-seed 确定性种子 | 已解决 |
 | crypto.randomBytes() | ✅ 补丁了 7 个 OpenSSL 文件 | ✅ RAND_bytes_ex DYLD_INTERPOSE | 已解决 |
 | 文件 I/O | ✅ 完整录制+回放（虚拟文件系统） | ⚠️ 录制有效但回放跳过 | **Phase 8** |
-| 网络 I/O | ✅ 请求/响应完整录制回放 | ❌ net.cc 禁用 | **Phase 7** |
+| 网络 I/O | ✅ 请求/响应完整录制回放 | ✅ socket read 返回录制数据 | 已解决(MVP) |
 | 线程/事件循环 | ✅ 9 个 libuv 文件补丁 + 有序锁 | ❌ thread.cc 禁用 | 远期 |
 | 回放偏差检测 | ✅ AssertValue 字节码自动检测 | ❌ 无 | **Phase 11** |
 
