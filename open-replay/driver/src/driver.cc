@@ -38,12 +38,15 @@
 #include <mutex>
 #include <pthread.h>
 
+#include <signal.h>
+#include <sys/wait.h>
+#include <unistd.h>
+
 #ifdef __APPLE__
 #include <uuid/uuid.h>
 #include <crt_externs.h>  // _NSGetArgc / _NSGetArgv
 #else
 #include <fcntl.h>
-#include <unistd.h>
 #endif
 
 /*
@@ -94,6 +97,31 @@ static uint64_t g_progress_counter = 0;
 static uint64_t g_target_progress = 0;
 
 static CDPMessageCallback g_cdp_callback = nullptr;
+
+/*
+ * 【fork() 检查点系统】
+ *
+ * 回放时每隔 N 个时间事件，调用 fork() 创建子进程快照。
+ * 子进程通过 COW（Copy-On-Write）保留父进程的完整内存状态，
+ * 然后 pause() 等待信号。
+ *
+ * 当需要"回退"时：
+ * 1. 杀掉当前进程
+ * 2. 给最近的检查点子进程发 SIGUSR1
+ * 3. 子进程醒来，继续执行（从检查点处的状态恢复）
+ *
+ * 限制：子进程醒来后没有 inspector 连接，需要重新建立。
+ * 当前实现是 MVP——先证明 fork 快照能工作。
+ */
+static constexpr int MAX_FORK_CHECKPOINTS = 64;
+struct ForkCheckpoint {
+  pid_t pid;
+  uint64_t event_index;  // reader cursor position at fork time
+};
+static ForkCheckpoint g_fork_checkpoints[MAX_FORK_CHECKPOINTS];
+static int g_fork_checkpoint_count = 0;
+static int g_replay_event_count = 0;  // events consumed so far
+static constexpr int FORK_CHECKPOINT_INTERVAL = 500;  // fork every N events
 // Use pthread_mutex_t with static initializer — safe before C++ constructors run
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -253,6 +281,14 @@ uintptr_t RecordReplayValue(const char* why, uintptr_t value) {
     return value;
   }
   if (g_mode == Mode::REPLAYING) {
+    g_replay_event_count++;
+
+    // Periodically create fork checkpoints during replay
+    if (g_replay_event_count % FORK_CHECKPOINT_INTERVAL == 0 &&
+        g_fork_checkpoint_count < MAX_FORK_CHECKPOINTS) {
+      RecordReplayForkCheckpoint();
+    }
+
     const auto* ev = reader().NextEvent(why);
     if (ev && ev->data.size() >= sizeof(uintptr_t)) {
       uintptr_t result;
@@ -328,6 +364,61 @@ void RecordReplaySendCDPMessage(const char* message, size_t length) {
 
 void RecordReplaySetCDPCallback(CDPMessageCallback callback) {
   g_cdp_callback = callback;
+}
+
+int RecordReplayForkCheckpoint() {
+  if (g_mode != Mode::REPLAYING) return -1;
+  if (g_fork_checkpoint_count >= MAX_FORK_CHECKPOINTS) return -1;
+
+  pid_t pid = fork();
+  if (pid < 0) return -1;  // fork failed
+
+  if (pid == 0) {
+    // Child process: this IS the checkpoint.
+    // Wait for SIGUSR1 to continue, or SIGTERM to die.
+    sigset_t set;
+    sigemptyset(&set);
+    sigaddset(&set, SIGUSR1);
+    sigaddset(&set, SIGTERM);
+    int sig;
+    sigwait(&set, &sig);
+
+    if (sig == SIGTERM) _exit(0);
+
+    // SIGUSR1 received — we're being restored!
+    // The process continues from exactly where fork() returned.
+    fprintf(stderr, "[openreplay] Checkpoint restored (pid %d)\n", getpid());
+    return g_fork_checkpoint_count;  // return our index
+  }
+
+  // Parent process: record the checkpoint
+  int idx = g_fork_checkpoint_count++;
+  g_fork_checkpoints[idx].pid = pid;
+  g_fork_checkpoints[idx].event_index = g_replay_event_count;
+  fprintf(stderr, "[openreplay] Fork checkpoint #%d created (child pid %d, events %d)\n",
+          idx, pid, g_replay_event_count);
+  return idx;
+}
+
+int RecordReplayRestoreCheckpoint(int checkpoint_index) {
+  if (checkpoint_index < 0 || checkpoint_index >= g_fork_checkpoint_count) return -1;
+  pid_t pid = g_fork_checkpoints[checkpoint_index].pid;
+  // Wake up the checkpoint child
+  if (kill(pid, SIGUSR1) != 0) return -1;
+  return pid;
+}
+
+int RecordReplayGetForkCheckpointCount() {
+  return g_fork_checkpoint_count;
+}
+
+// Clean up all fork checkpoint children on exit
+static void cleanup_fork_checkpoints() {
+  for (int i = 0; i < g_fork_checkpoint_count; i++) {
+    kill(g_fork_checkpoints[i].pid, SIGTERM);
+    waitpid(g_fork_checkpoints[i].pid, nullptr, WNOHANG);
+  }
+  g_fork_checkpoint_count = 0;
 }
 
 void RecordReplayLog(const char* format, ...) {
@@ -439,10 +530,12 @@ static void openreplay_auto_init() {
     }
 
     atexit(openreplay_shutdown_handler);
+    atexit(cleanup_fork_checkpoints);
   }
 }
 
 __attribute__((destructor))
 static void openreplay_auto_shutdown() {
+  cleanup_fork_checkpoints();
   RecordReplayDetach();
 }

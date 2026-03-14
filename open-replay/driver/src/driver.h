@@ -77,6 +77,18 @@ void RecordReplayNewCheckpoint();
 // Get the total number of checkpoints in the recording.
 uint32_t RecordReplayGetCheckpointCount();
 
+// Create a fork()-based checkpoint (replay mode only).
+// Returns the checkpoint index, or -1 if fork failed.
+int RecordReplayForkCheckpoint();
+
+// Restore from a fork checkpoint. Sends SIGUSR1 to the checkpoint's child.
+// The current process should exit after calling this.
+// Returns the PID of the restored child, or -1 on failure.
+int RecordReplayRestoreCheckpoint(int checkpoint_index);
+
+// Get the number of fork checkpoints available.
+int RecordReplayGetForkCheckpointCount();
+
 // --- CDP (Chrome DevTools Protocol) integration ---
 
 // Send a CDP message to the driver (from Node.js JS runtime).
