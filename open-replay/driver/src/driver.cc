@@ -113,15 +113,15 @@ static CDPMessageCallback g_cdp_callback = nullptr;
  * 限制：子进程醒来后没有 inspector 连接，需要重新建立。
  * 当前实现是 MVP——先证明 fork 快照能工作。
  */
-static constexpr int MAX_FORK_CHECKPOINTS = 64;
+static constexpr int MAX_FORK_CHECKPOINTS = 16;
 struct ForkCheckpoint {
   pid_t pid;
-  uint64_t event_index;  // reader cursor position at fork time
+  uint64_t event_index;
 };
 static ForkCheckpoint g_fork_checkpoints[MAX_FORK_CHECKPOINTS];
 static int g_fork_checkpoint_count = 0;
-static int g_replay_event_count = 0;  // events consumed so far
-static constexpr int FORK_CHECKPOINT_INTERVAL = 500;  // fork every N events
+static int g_replay_event_count = 0;
+static constexpr int FORK_CHECKPOINT_INTERVAL = 5000;  // fork every 5000 events
 // Use pthread_mutex_t with static initializer — safe before C++ constructors run
 static pthread_mutex_t g_mutex = PTHREAD_MUTEX_INITIALIZER;
 
@@ -388,6 +388,13 @@ int RecordReplayForkCheckpoint() {
     if (sig == SIGTERM) _exit(0);
 
     // SIGCONT received — we're being restored!
+    // Block SIGTERM immediately so parent's atexit cleanup can't kill us.
+    // The server will manage our lifecycle from now on.
+    sigset_t block_term;
+    sigemptyset(&block_term);
+    sigaddset(&block_term, SIGTERM);
+    sigprocmask(SIG_BLOCK, &block_term, nullptr);
+
     fprintf(stderr, "[openreplay] Checkpoint restored (pid %d, events %d)\n",
             getpid(), g_replay_event_count);
     return g_fork_checkpoint_count;  // return our index

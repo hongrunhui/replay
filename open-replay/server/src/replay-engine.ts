@@ -381,37 +381,96 @@ export class ReplayEngine extends EventEmitter {
   private forkCheckpointPids: Array<{ pid: number; events: number }> = [];
 
   async runToLine(fileUrl: string, lineNumber: number): Promise<PauseState | null> {
-    // Kill current process (but fork checkpoint children survive — they're independent)
+    // Save checkpoint PIDs before stopping (they'll survive if we SIGCONT one first)
+    const savedCheckpoints = [...this.forkCheckpointPids];
+
+    // Try to restore from a fork checkpoint (if available).
+    // SIGCONT the child BEFORE killing the parent, so the child wakes up
+    // and blocks SIGTERM before the parent's atexit can kill it.
+    let restoredFromCheckpoint = false;
+    if (savedCheckpoints.length > 0 && this.child) {
+      const cpChild = savedCheckpoints[savedCheckpoints.length - 1]; // latest checkpoint
+      try {
+        process.kill(cpChild.pid, 'SIGCONT');  // Wake checkpoint child
+        restoredFromCheckpoint = true;
+        process.stderr.write(`[engine] Restoring from checkpoint (pid ${cpChild.pid}, events ${cpChild.events})\n`);
+      } catch {
+        // Checkpoint child already dead
+        restoredFromCheckpoint = false;
+      }
+    }
+
+    // Kill the current main process
     await this.stop();
     this.scriptUrls.clear();
     this.cdpEventHandlers.clear();
     this.currentPause = null;
     this.nextMsgId = 1;
 
-    // Start fresh process with inspector
-    const { nodePath, env, scriptPath } = this.buildSpawnConfig();
-    this.inspectorPort = 9200 + Math.floor(Math.random() * 800);
-    const header = parseRecordingHeader(this.opts.recordingPath);
-    const nodeArgs: string[] = [`--inspect-brk=${this.inspectorPort}`];
-    if (header.randomSeed) nodeArgs.push(`--random-seed=${header.randomSeed}`);
-    nodeArgs.push(scriptPath || '-e void 0');
+    if (restoredFromCheckpoint) {
+      const cpChild = savedCheckpoints[savedCheckpoints.length - 1];
+      // Give child time to resume and process the SIGCONT
+      await new Promise(r => setTimeout(r, 300));
 
-    this.child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
-    this.child.stderr?.on('data', (d: Buffer) => {
-      const msg = d.toString();
-      // Capture fork checkpoint PIDs from driver output
-      const cpMatch = msg.match(/Fork checkpoint #(\d+) created \(child pid (\d+), events (\d+)\)/);
-      if (cpMatch) {
-        this.forkCheckpointPids.push({
-          pid: parseInt(cpMatch[2], 10),
-          events: parseInt(cpMatch[3], 10),
-        });
+      // Send SIGUSR1 to activate Node.js inspector on port 9229
+      try {
+        process.kill(cpChild.pid, 'SIGUSR1');
+        process.stderr.write(`[engine] Sent SIGUSR1 to checkpoint child ${cpChild.pid}\n`);
+      } catch {
+        process.stderr.write(`[engine] Checkpoint child died, falling back\n`);
+        restoredFromCheckpoint = false;
       }
-      process.stderr.write(`[child] ${msg}`);
-      this.emit('stderr', msg);
-    });
-    this.child.stdout?.on('data', (d: Buffer) => this.emit('stdout', d.toString()));
-    this.child.on('exit', (code) => this.emit('exit', code ?? 0));
+    }
+
+    if (restoredFromCheckpoint) {
+      const cpChild = savedCheckpoints[savedCheckpoints.length - 1];
+      this.inspectorPort = 9229;
+      this.forkCheckpointPids = [];
+      this.child = null;
+
+      // Wait for inspector to become available (SIGUSR1 → inspector takes ~1-2s)
+      for (let attempt = 0; attempt < 20; attempt++) {
+        try {
+          await new Promise(r => setTimeout(r, 300));
+          await this.connectWS();
+          process.stderr.write(`[engine] Connected to checkpoint inspector!\n`);
+          break;
+        } catch {
+          if (attempt === 19) {
+            process.stderr.write(`[engine] Checkpoint inspector failed after 20 attempts, falling back\n`);
+            try { process.kill(cpChild.pid, 9); } catch {}
+            restoredFromCheckpoint = false;
+          }
+        }
+      }
+    }
+
+    // Fall back: start fresh process
+    if (!restoredFromCheckpoint) {
+      this.forkCheckpointPids = [];
+      const { nodePath, env, scriptPath } = this.buildSpawnConfig();
+      this.inspectorPort = 9200 + Math.floor(Math.random() * 800);
+      const header = parseRecordingHeader(this.opts.recordingPath);
+      const nodeArgs: string[] = [`--inspect-brk=${this.inspectorPort}`];
+      if (header.randomSeed) nodeArgs.push(`--random-seed=${header.randomSeed}`);
+      nodeArgs.push(scriptPath || '-e void 0');
+
+      this.child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      this.child.stderr?.on('data', (d: Buffer) => {
+        const msg = d.toString();
+        const cpMatch = msg.match(/Fork checkpoint #(\d+) created \(child pid (\d+), events (\d+)\)/);
+        if (cpMatch) {
+          this.forkCheckpointPids.push({
+            pid: parseInt(cpMatch[2], 10),
+            events: parseInt(cpMatch[3], 10),
+          });
+        }
+        process.stderr.write(`[child] ${msg}`);
+        this.emit('stderr', msg);
+      });
+      this.child.stdout?.on('data', (d: Buffer) => this.emit('stdout', d.toString()));
+      this.child.on('exit', (code) => this.emit('exit', code ?? 0));
+    }
 
     await this.waitForInspector();
 
