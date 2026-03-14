@@ -3,6 +3,32 @@
 // Spawns the patched Node.js in replay mode, connects to its inspector
 // via WebSocket (CDP), and controls execution via the progress counter.
 
+/*
+ * 【回放引擎架构】
+ *
+ * ReplayEngine 负责把录制好的 .orec 文件"重放"出来，并提供调试能力。
+ *
+ * 工作流程：
+ * 1. 启动一个子进程运行 patched Node.js，注入 libopenreplay.dylib（回放模式）
+ * 2. 通过 Node.js 的 --inspect-brk 启动 V8 Inspector（Chrome DevTools Protocol）
+ * 3. 用 WebSocket 连接到 Inspector，发送 CDP 命令控制执行
+ *
+ * 两种运行模式：
+ * - run()：无调试器，直接执行到结束，收集 stdout/stderr。用于验证回放正确性。
+ * - start()：带调试器，--inspect-brk 在第一行暂停。用于交互式调试（设断点、单步等）。
+ *
+ * WebSocket CDP 连接流程：
+ * 1. 子进程启动后，stderr 会输出 "Debugger listening on ws://127.0.0.1:PORT/..."
+ * 2. 先 HTTP GET /json 获取 webSocketDebuggerUrl（每次启动 URL 中的 UUID 不同）
+ * 3. 用 WebSocket 连接该 URL，后续通过 JSON-RPC 收发 CDP 消息
+ *
+ * runIfWaitingForDebugger 的作用：
+ * Node.js v22+ 的 --inspect-brk 行为变了：
+ * 启用 Debugger.enable 后不会自动暂停，需要先发 Runtime.runIfWaitingForDebugger
+ * 释放 --inspect-brk 的等待锁，然后 V8 才会触发 Debugger.paused 事件。
+ * 如果不发这个命令，进程会永远卡在等待状态。
+ */
+
 import { ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
 import { resolve, join } from 'node:path';
@@ -102,7 +128,12 @@ export class ReplayEngine extends EventEmitter {
     return { nodePath, env, scriptPath };
   }
 
-  // Run replay without debugger — just execute and capture output.
+  /*
+   * 【run() — 无调试器直接回放】
+   * 不使用 --inspect-brk，子进程直接执行到结束。
+   * 用途：快速验证录制文件能否正确回放，比较 stdout 与原始录制是否一致。
+   * 不建立 WebSocket 连接，不支持断点/单步。
+   */
   async run(): Promise<{ exitCode: number; stdout: string; stderr: string }> {
     const { nodePath, env, scriptPath } = this.buildSpawnConfig();
     if (!scriptPath) throw new Error('No script path in recording metadata');
@@ -121,7 +152,23 @@ export class ReplayEngine extends EventEmitter {
     });
   }
 
-  // Start replay with debugger attached (for stepping/breakpoints).
+  /*
+   * 【start() — 带调试器的交互式回放】
+   * 使用 --inspect-brk 启动，在第一行代码前暂停。
+   * 建立 WebSocket CDP 连接后，调用方可以：
+   *   - setBreakpoint / resume / stepOver / stepInto
+   *   - evaluate 表达式（在暂停帧上下文中求值）
+   *   - getProperties 查看对象属性
+   *
+   * Inspector 端口随机选取 9200-9999，避免多实例冲突。
+   *
+   * 启动序列的时序很重要：
+   * 1. 先注册 CDP 事件处理器（scriptParsed / paused / resumed）
+   * 2. 再 enable 各 CDP domain（enable 可能同步触发事件）
+   * 3. 发 runIfWaitingForDebugger 释放 --inspect-brk
+   * 4. 等待 Debugger.paused 事件（超时 3s 兜底）
+   * 如果顺序反了，可能丢失 scriptParsed 事件导致 scriptUrls 不完整。
+   */
   async start(): Promise<void> {
     const { nodePath, env, scriptPath } = this.buildSpawnConfig();
 
@@ -237,6 +284,12 @@ export class ReplayEngine extends EventEmitter {
     });
   }
 
+  /*
+   * 【CDP 消息分发】
+   * CDP 使用 JSON-RPC 风格协议，消息分两类：
+   * - 有 id 的：是之前 sendCDP() 请求的响应，通过 pendingRequests Map 匹配
+   * - 有 method 的：是服务器推送的事件（如 Debugger.paused），分发给 cdpEventHandlers
+   */
   private handleWsMessage(msg: { id?: number; method?: string; result?: unknown; error?: { message: string }; params?: unknown }): void {
     if (msg.id !== undefined) {
       const pending = this.pendingRequests.get(msg.id);
@@ -330,7 +383,13 @@ export class ReplayEngine extends EventEmitter {
   }
 }
 
-// Parse recording file header and metadata
+/*
+ * 【录制文件头解析】
+ * 读取 .orec 文件的 64 字节 header 和内嵌的 METADATA 事件。
+ * METADATA 事件（type=0x20）可能出现在事件流的任意位置，
+ * 需要扫描整个事件流才能找到。目前只提取 scriptPath 字段，
+ * 用于 start()/run() 自动确定要回放的脚本。
+ */
 export function parseRecordingHeader(path: string): {
   magic: string;
   version: number;

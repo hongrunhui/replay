@@ -1,5 +1,26 @@
 // Open Replay — Recording File Format Implementation
 
+/*
+ * 【录制文件格式 (.orec)】
+ *
+ * 文件结构：
+ *   [FileHeader: 64 字节] — magic "OREC0001" + 版本 + 时间戳 + build_id
+ *   [Event Stream]        — 连续的事件记录
+ *   [Checkpoint Index]    — checkpoint 数量 + CheckpointEntry 数组
+ *   [FileTail: 32 字节]   — 总事件数 + checkpoint_offset + sentinel 0xDEADBEEF
+ *
+ * 每个事件：[type:u8][why_hash:u32][data_len:u32][data:bytes]
+ *   - type: VALUE(标量值) / BYTES(二进制数据) / STRING / CHECKPOINT / METADATA
+ *   - why_hash: 调用点语义标识的 FNV 哈希（如 "open" → 0x1234abcd）
+ *   - data: 具体录制的数据（返回值、缓冲区内容等）
+ *
+ * 设计要点：
+ * 1. Writer 使用 raw::write/open 直接系统调用写文件，避免被 DYLD_INTERPOSE 拦截。
+ * 2. Reader 一次性将整个文件读入内存再解析，简化随机访问逻辑。
+ * 3. 回放时 METADATA 事件不加入事件流（events_），因为它不是可回放的系统调用，
+ *    只是附加信息（如脚本路径）。如果加入事件流会导致 why_hash 匹配错位。
+ */
+
 #include "format/recording.h"
 #include "raw_syscall.h"
 
@@ -22,6 +43,11 @@ RecordingWriter::~RecordingWriter() {
   if (fd_ >= 0) Close();
 }
 
+/*
+ * 【RawWrite】使用 raw::write（直接 syscall）写入文件。
+ * 不能用 libc 的 write()，因为它会被 DYLD_INTERPOSE 拦截，
+ * 导致在录制模式下写录制文件本身又触发录制——无限递归。
+ */
 void RecordingWriter::RawWrite(const void* buf, size_t len) {
   const char* p = static_cast<const char*>(buf);
   while (len > 0) {
@@ -183,7 +209,12 @@ bool RecordingReader::Open(const char* path) {
     return false;
   }
 
-  // Use libc fstat (safe here since mode is IDLE during reader init)
+  /*
+   * 使用 libc fstat 而非 raw::fstat。
+   * 原因：macOS arm64 上 SYS_fstat 直接 syscall 返回的 size 为 0（内核 ABI 问题），
+   * 但此时 mode 还是 IDLE（Reader 在 Attach 设置模式之前打开），
+   * 所以 libc fstat 不会被 DYLD_INTERPOSE 拦截，可以安全使用。
+   */
   struct stat st;
   if (::fstat(fd, &st) < 0 || st.st_size < static_cast<off_t>(sizeof(FileHeader) + sizeof(FileTail))) {
     fprintf(stderr, "[openreplay] Recording file too small: %s\n", path);
@@ -277,7 +308,11 @@ bool RecordingReader::ParseEvents(const uint8_t* data, size_t len) {
     ev.index = index++;
     offset += data_len;
 
-    // Parse inline metadata (don't add to event stream — it's not a replay event)
+    /*
+     * METADATA 事件不加入 events_，因为它是"带外信息"（脚本路径等），
+     * 不对应任何系统调用。如果混入事件流，会占据一个位置，
+     * 导致后续 NextEvent() 的游标偏移，引发回放数据错位。
+     */
     if (ev.type == EventType::METADATA && !ev.data.empty()) {
       metadata_.assign(reinterpret_cast<const char*>(ev.data.data()), ev.data.size());
       continue;
@@ -303,6 +338,23 @@ void RecordingReader::Close() {
   global_cursor_ = 0;
 }
 
+/*
+ * 【按 why_hash 的游标系统】
+ * 每个不同的 why 字符串（经 FNV 哈希后）维护独立的游标 (cursors_[hash])。
+ *
+ * 为什么不用全局顺序游标？
+ * ──────────────────────
+ * 录制时事件是交错的：open, gettimeofday, read, gettimeofday, close ...
+ * 回放时，每种系统调用按自己的节奏消费事件。如果用全局游标，
+ * 第二次 gettimeofday 调用可能会读到中间的 read 事件——类型不匹配。
+ *
+ * 按 why_hash 分流后，gettimeofday 只看 why_hash 匹配的事件，
+ * 自动跳过 open/read 等无关事件，实现"语义对齐"。
+ *
+ * 局限性：如果同一个 why 的事件顺序在录制和回放之间不同，仍会错位。
+ * 这在 time/random 拦截中不是问题（调用次数和顺序由代码路径决定，
+ * 而代码路径由更早的拦截保证一致），但文件 I/O 中是问题（见 fs.cc 注释）。
+ */
 const RecordingReader::Event* RecordingReader::NextEvent(const char* why) {
   uint32_t hash = FnvHash(why);
   size_t& cursor = cursors_[hash];
