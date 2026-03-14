@@ -1,0 +1,10 @@
+{
+  "description": "Add 4 record/replay bytecodes to V8 bytecode list",
+  "file": "deps/v8/src/interpreter/bytecodes.h",
+  "insertions": [
+    {
+      "after": "V(IncBlockCounter, ImplicitRegisterUse::kNone",
+      "content": "                                                                               \\\n  /* Record Replay */                                                          \\\n  V(RecordReplayIncExecutionProgressCounter, ImplicitRegisterUse::kNone)       \\\n  V(RecordReplayInstrumentation, ImplicitRegisterUse::kNone,                   \\\n      OperandType::kIdx)                                                       \\\n  V(RecordReplayInstrumentationGenerator, ImplicitRegisterUse::kNone,          \\\n      OperandType::kIdx, OperandType::kReg)                                    \\\n  V(RecordReplayAssertValue, ImplicitRegisterUse::kReadWriteAccumulator,       \\\n      OperandType::kIdx)                                                       \\"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Add Visit methods for record/replay bytecodes in TurboFan",
+  "file": "deps/v8/src/compiler/bytecode-graph-builder.cc",
+  "insertions": [
+    {
+      "after": "void BytecodeGraphBuilder::VisitAbort",
+      "content": "\n// --- Open Replay: Record/Replay Visit methods ---\n\nvoid BytecodeGraphBuilder::VisitRecordReplayIncExecutionProgressCounter() {\n  Environment* env = environment();\n  Node* closure = env->LookupRegister(interpreter::Register::function_closure());\n  NewNode(javascript()->CallRuntime(\n      Runtime::kRecordReplayAssertExecutionProgress, 1), closure);\n}\n\nvoid BytecodeGraphBuilder::VisitRecordReplayInstrumentation() {\n  Environment* env = environment();\n  Node* closure = env->LookupRegister(interpreter::Register::function_closure());\n  Node* index = jsgraph()->SmiConstant(\n      bytecode_iterator().GetIndexOperand(0));\n  NewNode(javascript()->CallRuntime(\n      Runtime::kRecordReplayInstrumentation, 2), closure, index);\n}\n\nvoid BytecodeGraphBuilder::VisitRecordReplayInstrumentationGenerator() {\n  Environment* env = environment();\n  Node* closure = env->LookupRegister(interpreter::Register::function_closure());\n  Node* index = jsgraph()->SmiConstant(\n      bytecode_iterator().GetIndexOperand(0));\n  Node* generator = env->LookupRegister(\n      bytecode_iterator().GetRegisterOperand(1));\n  NewNode(javascript()->CallRuntime(\n      Runtime::kRecordReplayInstrumentationGenerator, 3),\n      closure, index, generator);\n}\n\nvoid BytecodeGraphBuilder::VisitRecordReplayAssertValue() {\n  Environment* env = environment();\n  Node* closure = env->LookupRegister(interpreter::Register::function_closure());\n  Node* index = jsgraph()->SmiConstant(\n      bytecode_iterator().GetIndexOperand(0));\n  Node* value = environment()->LookupAccumulator();\n  Node* result = NewNode(javascript()->CallRuntime(\n      Runtime::kRecordReplayAssertValue, 3), closure, index, value);\n  environment()->BindAccumulator(result);\n}\n"
+    }
+  ]
+}

@@ -1,0 +1,10 @@
+{
+  "description": "Add IGNITION_HANDLERs for record/replay bytecodes",
+  "file": "deps/v8/src/interpreter/interpreter-generator.cc",
+  "insertions": [
+    {
+      "after": "IGNITION_HANDLER(Abort, InterpreterAssembler)",
+      "content": "\n// --- Open Replay: Record/Replay bytecode handlers ---\n\nIGNITION_HANDLER(RecordReplayIncExecutionProgressCounter, InterpreterAssembler) {\n  TNode<Context> context = GetContext();\n  TNode<Object> closure = LoadRegister(Register::function_closure());\n  CallRuntime(Runtime::kRecordReplayAssertExecutionProgress, context, closure);\n  Dispatch();\n}\n\nIGNITION_HANDLER(RecordReplayInstrumentation, InterpreterAssembler) {\n  TNode<Context> context = GetContext();\n  TNode<Object> closure = LoadRegister(Register::function_closure());\n  TNode<Smi> index = BytecodeOperandIdxSmi(0);\n  CallRuntime(Runtime::kRecordReplayInstrumentation, context, closure, index);\n  Dispatch();\n}\n\nIGNITION_HANDLER(RecordReplayInstrumentationGenerator, InterpreterAssembler) {\n  TNode<Context> context = GetContext();\n  TNode<Object> closure = LoadRegister(Register::function_closure());\n  TNode<Smi> index = BytecodeOperandIdxSmi(0);\n  TNode<Object> generator = LoadRegisterAtOperandIndex(1);\n  CallRuntime(Runtime::kRecordReplayInstrumentationGenerator,\n              context, closure, index, generator);\n  Dispatch();\n}\n\nIGNITION_HANDLER(RecordReplayAssertValue, InterpreterAssembler) {\n  TNode<Context> context = GetContext();\n  TNode<Object> closure = LoadRegister(Register::function_closure());\n  TNode<Smi> index = BytecodeOperandIdxSmi(0);\n  TNode<Object> value = GetAccumulator();\n  TNode<Object> result = CallRuntime(Runtime::kRecordReplayAssertValue,\n                                     context, closure, index, value);\n  SetAccumulator(result);\n  Dispatch();\n}\n"
+    }
+  ]
+}

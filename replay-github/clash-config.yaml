@@ -1,0 +1,38 @@
+mixed-port: 7890
+allow-lan: false
+mode: rule
+log-level: info
+
+proxies:
+  - name: "🏠 静态IP-纽约"
+    type: http
+    server: 149.119.167.105
+    port: 443
+    username: pwsLjjZJPuhc
+    password: SEDmrFY5mV
+    tls: true
+
+  # ===== 在此添加你的代理节点，并设置 dialer-proxy =====
+  # 例如 VMESS 节点：
+  # - name: "香港节点"
+  #   type: vmess
+  #   server: example.com
+  #   port: 443
+  #   uuid: your-uuid
+  #   alterId: 0
+  #   cipher: auto
+  #   tls: true
+  #   dialer-proxy: "🏠 静态IP-纽约"
+
+proxy-groups:
+  - name: "🔗 链式代理"
+    type: select
+    proxies:
+      - "🏠 静态IP-纽约"
+      - DIRECT
+      # - "香港节点"
+      # 添加更多节点...
+
+rules:
+  - GEOIP,CN,DIRECT
+  - MATCH,🔗 链式代理

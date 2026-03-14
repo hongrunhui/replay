@@ -1,0 +1,10 @@
+{
+  "description": "Add record/replay external references to header",
+  "file": "deps/v8/src/codegen/external-reference.h",
+  "insertions": [
+    {
+      "after": "V(address_of_log_or_trace_osr",
+      "content": "  /* Record Replay */                                                        \\\n  V(record_replay_progress_counter, \"record_replay_progress_counter\")          \\\n  V(record_replay_target_progress, \"record_replay_target_progress\")            \\"
+    }
+  ]
+}

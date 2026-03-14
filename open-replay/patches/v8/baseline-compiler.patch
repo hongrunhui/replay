@@ -1,0 +1,10 @@
+{
+  "description": "Add Visit methods for record/replay bytecodes in baseline compiler",
+  "file": "deps/v8/src/baseline/baseline-compiler.cc",
+  "insertions": [
+    {
+      "after": "void BaselineCompiler::VisitAbort",
+      "content": "\n// --- Open Replay: Record/Replay Visit methods ---\n\nvoid BaselineCompiler::VisitRecordReplayIncExecutionProgressCounter() {\n  CallRuntime(Runtime::kRecordReplayAssertExecutionProgress,\n              __ FunctionOperand());\n}\n\nvoid BaselineCompiler::VisitRecordReplayInstrumentation() {\n  CallRuntime(Runtime::kRecordReplayInstrumentation,\n              __ FunctionOperand(),\n              __ BytecodeOperandIdxSmi(0));\n}\n\nvoid BaselineCompiler::VisitRecordReplayInstrumentationGenerator() {\n  CallRuntime(Runtime::kRecordReplayInstrumentationGenerator,\n              __ FunctionOperand(),\n              __ BytecodeOperandIdxSmi(0),\n              __ RegisterOperand(1));\n}\n\nvoid BaselineCompiler::VisitRecordReplayAssertValue() {\n  CallRuntime(Runtime::kRecordReplayAssertValue,\n              __ FunctionOperand(),\n              __ BytecodeOperandIdxSmi(0),\n              kInterpreterAccumulatorRegister);\n}\n"
+    }
+  ]
+}

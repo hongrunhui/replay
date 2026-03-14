@@ -1,0 +1,10 @@
+{
+  "description": "Add 5 record/replay runtime functions",
+  "file": "deps/v8/src/runtime/runtime.h",
+  "insertions": [
+    {
+      "after": "F(ThrowAccessedUninitializedVariable",
+      "content": "  /* Record Replay */                                                        \\\n  F(RecordReplayAssertExecutionProgress, 1, 1)                                \\\n  F(RecordReplayTargetProgressReached, 0, 1)                                  \\\n  F(RecordReplayAssertValue, 3, 1)                                            \\\n  F(RecordReplayInstrumentation, 2, 1)                                        \\\n  F(RecordReplayInstrumentationGenerator, 3, 1)                               \\"
+    }
+  ]
+}

@@ -1,0 +1,14 @@
+{
+  "description": "Implement record/replay external references",
+  "file": "deps/v8/src/codegen/external-reference.cc",
+  "insertions": [
+    {
+      "after": "#include \"src/codegen/external-reference.h\"",
+      "content": "\n// Open Replay\nextern uint64_t* gProgressCounter;\nextern uint64_t gTargetProgress;"
+    },
+    {
+      "after": "ExternalReference ExternalReference::address_of_log_or_trace_osr",
+      "content": "\n// Open Replay\nExternalReference ExternalReference::record_replay_progress_counter() {\n  return ExternalReference(reinterpret_cast<Address>(gProgressCounter));\n}\n\nExternalReference ExternalReference::record_replay_target_progress() {\n  return ExternalReference(reinterpret_cast<Address>(&gTargetProgress));\n}"
+    }
+  ]
+}

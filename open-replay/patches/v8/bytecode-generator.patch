@@ -1,0 +1,10 @@
+{
+  "description": "Add record/replay instrumentation to bytecode generator",
+  "file": "deps/v8/src/interpreter/bytecode-generator.cc",
+  "insertions": [
+    {
+      "after": "#include \"src/interpreter/bytecode-register-optimizer.h\"",
+      "content": "#include \"include/replayio.h\"  // Open Replay"
+    }
+  ]
+}

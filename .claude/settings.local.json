@@ -1,0 +1,12 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(for dir:*)",
+      "Bash(do echo:*)",
+      "Read(//Users/hongrunhui/Documents/code/各种框架源码/replay/replay-github/**)",
+      "Bash(done)",
+      "Bash(find /Users/hongrunhui/Documents/code/各种框架源码/replay/replay-github/node -type f -name \"*replay*\" -o -name \"*REPLAY*\" 2>/dev/null | head -50)",
+      "Bash(find /Users/hongrunhui/Documents/code/各种框架源码/replay/replay-github/chromium-v8 -type f -name \"*replay*\" 2>/dev/null | head -50)"
+    ]
+  }
+}

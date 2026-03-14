@@ -1,0 +1,281 @@
+// Open Replay — File System Interception
+//
+// Intercepts: open, openat, read, close, stat, fstat, lstat
+//
+// Path filtering: skips system paths (/usr/, /System/, /Library/, /private/,
+// /dev/, /.openreplay/) to avoid recording Node.js module loading noise.
+// Only user-space file I/O is recorded.
+//
+// Fd tracking: open/openat record which fds are "user fds" so that read/close
+// only intercept those fds (not internal Node.js fds).
+
+#include "intercept/common.h"
+
+#include <cstdarg>
+#include <cstring>
+#include <cerrno>
+#include <fcntl.h>
+#include <unistd.h>
+#include <sys/stat.h>
+#include <unordered_set>
+#include <pthread.h>
+
+// --- Path filtering ---
+
+// Returns true if this path should be intercepted (user-space file I/O).
+// Skips system paths and the recording directory to keep recordings small.
+static bool ShouldInterceptPath(const char* path) {
+  if (!path || path[0] == '\0') return false;
+
+  // Skip system/framework paths (Node.js module loading)
+  if (strncmp(path, "/usr/", 5) == 0) return false;
+  if (strncmp(path, "/System/", 8) == 0) return false;
+  if (strncmp(path, "/Library/", 9) == 0) return false;
+  if (strncmp(path, "/private/", 9) == 0) return false;
+  if (strncmp(path, "/dev/", 5) == 0) return false;
+  if (strncmp(path, "/proc/", 6) == 0) return false;
+  if (strncmp(path, "/sys/", 5) == 0) return false;
+
+  // Skip the recording directory itself
+  if (strstr(path, "/.openreplay/") != nullptr) return false;
+
+  return true;
+}
+
+// --- Fd tracking ---
+// Tracks which file descriptors were opened through interception.
+// read/close only intercept these fds.
+
+static std::unordered_set<int> g_tracked_fds;
+static pthread_mutex_t g_fd_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+static void TrackFd(int fd) {
+  if (fd < 0) return;
+  pthread_mutex_lock(&g_fd_mutex);
+  g_tracked_fds.insert(fd);
+  pthread_mutex_unlock(&g_fd_mutex);
+}
+
+static void UntrackFd(int fd) {
+  pthread_mutex_lock(&g_fd_mutex);
+  g_tracked_fds.erase(fd);
+  pthread_mutex_unlock(&g_fd_mutex);
+}
+
+static bool IsTrackedFd(int fd) {
+  if (fd < 0) return false;
+  pthread_mutex_lock(&g_fd_mutex);
+  bool result = g_tracked_fds.count(fd) > 0;
+  pthread_mutex_unlock(&g_fd_mutex);
+  return result;
+}
+
+// --- Intercepted functions ---
+
+extern "C" {
+
+int my_open(const char* path, int flags, ...) {
+  mode_t mode = 0;
+  if (flags & O_CREAT) {
+    va_list ap;
+    va_start(ap, flags);
+    mode = va_arg(ap, int);
+    va_end(ap);
+  }
+  InterceptGuard guard;
+  if (!guard) return open(path, flags, mode);
+  if (!ShouldInterceptPath(path)) return open(path, flags, mode);
+
+  if (RecordReplayIsRecording()) {
+    int ret = open(path, flags, mode);
+    int saved_errno = errno;
+    RecordReplayValue("open", static_cast<uintptr_t>(ret));
+    if (ret >= 0) TrackFd(ret);
+    errno = saved_errno;
+    return ret;
+  }
+  if (RecordReplayIsReplaying()) {
+    // Do the real open so the fd is valid for libuv/syscall close.
+    // We track the real fd and serve recorded data from read().
+    int ret = open(path, flags, mode);
+    int saved_errno = errno;
+    RecordReplayValue("open", 0);  // consume recorded value, keep stream in sync
+    if (ret >= 0) TrackFd(ret);
+    errno = saved_errno;
+    return ret;
+  }
+  return open(path, flags, mode);
+}
+
+int my_openat(int dirfd, const char* path, int flags, ...) {
+  mode_t mode = 0;
+  if (flags & O_CREAT) {
+    va_list ap;
+    va_start(ap, flags);
+    mode = va_arg(ap, int);
+    va_end(ap);
+  }
+  InterceptGuard guard;
+  if (!guard) return openat(dirfd, path, flags, mode);
+  if (!ShouldInterceptPath(path)) return openat(dirfd, path, flags, mode);
+
+  if (RecordReplayIsRecording()) {
+    int ret = openat(dirfd, path, flags, mode);
+    int saved_errno = errno;
+    RecordReplayValue("openat", static_cast<uintptr_t>(ret));
+    if (ret >= 0) TrackFd(ret);
+    errno = saved_errno;
+    return ret;
+  }
+  if (RecordReplayIsReplaying()) {
+    // Do the real openat so the fd is valid for libuv/syscall close.
+    int ret = openat(dirfd, path, flags, mode);
+    int saved_errno = errno;
+    RecordReplayValue("openat", 0);  // consume recorded value, keep stream in sync
+    if (ret >= 0) TrackFd(ret);
+    errno = saved_errno;
+    return ret;
+  }
+  return openat(dirfd, path, flags, mode);
+}
+
+ssize_t my_read(int fd, void* buf, size_t count) {
+  InterceptGuard guard;
+  if (!guard) return read(fd, buf, count);
+  if (!IsTrackedFd(fd)) return read(fd, buf, count);
+
+  if (RecordReplayIsRecording()) {
+    ssize_t ret = read(fd, buf, count);
+    int saved_errno = errno;
+    RecordReplayValue("read.ret", static_cast<uintptr_t>(ret));
+    if (ret > 0) {
+      RecordReplayBytes("read.data", buf, static_cast<size_t>(ret));
+    }
+    errno = saved_errno;
+    return ret;
+  }
+  if (RecordReplayIsReplaying()) {
+    ssize_t ret = static_cast<ssize_t>(RecordReplayValue("read.ret", 0));
+    if (ret > 0 && buf) {
+      RecordReplayBytes("read.data", buf, static_cast<size_t>(ret));
+    }
+    return ret;
+  }
+  return read(fd, buf, count);
+}
+
+int my_close(int fd) {
+  InterceptGuard guard;
+  if (!guard) return close(fd);
+
+  bool was_tracked = IsTrackedFd(fd);
+  if (was_tracked) UntrackFd(fd);
+
+  if (!was_tracked) return close(fd);
+
+  if (RecordReplayIsRecording()) {
+    int ret = close(fd);
+    RecordReplayValue("close", static_cast<uintptr_t>(ret));
+    return ret;
+  }
+  if (RecordReplayIsReplaying()) {
+    // Do the real close so the fd is released (we opened a real fd above).
+    int ret = close(fd);
+    RecordReplayValue("close", 0);  // consume recorded value
+    return ret;
+  }
+  return close(fd);
+}
+
+int my_stat(const char* path, struct stat* buf) {
+  InterceptGuard guard;
+  if (!guard) return stat(path, buf);
+  if (!ShouldInterceptPath(path)) return stat(path, buf);
+
+  if (RecordReplayIsRecording()) {
+    int ret = stat(path, buf);
+    int saved_errno = errno;
+    RecordReplayValue("stat.ret", static_cast<uintptr_t>(ret));
+    if (ret == 0 && buf) {
+      RecordReplayBytes("stat.data", buf, sizeof(*buf));
+    }
+    errno = saved_errno;
+    return ret;
+  }
+  if (RecordReplayIsReplaying()) {
+    // Do real stat to populate buf, then overwrite with recorded data
+    // so replay sees the original file metadata.
+    RecordReplayValue("stat.ret", 0);  // consume
+    int ret = stat(path, buf);
+    if (ret == 0 && buf) {
+      RecordReplayBytes("stat.data", buf, sizeof(*buf));
+    }
+    return ret;
+  }
+  return stat(path, buf);
+}
+
+int my_fstat(int fd, struct stat* buf) {
+  InterceptGuard guard;
+  if (!guard) return fstat(fd, buf);
+  if (!IsTrackedFd(fd)) return fstat(fd, buf);
+
+  if (RecordReplayIsRecording()) {
+    int ret = fstat(fd, buf);
+    int saved_errno = errno;
+    RecordReplayValue("fstat.ret", static_cast<uintptr_t>(ret));
+    if (ret == 0 && buf) {
+      RecordReplayBytes("fstat.data", buf, sizeof(*buf));
+    }
+    errno = saved_errno;
+    return ret;
+  }
+  if (RecordReplayIsReplaying()) {
+    RecordReplayValue("fstat.ret", 0);  // consume
+    int ret = fstat(fd, buf);
+    if (ret == 0 && buf) {
+      RecordReplayBytes("fstat.data", buf, sizeof(*buf));
+    }
+    return ret;
+  }
+  return fstat(fd, buf);
+}
+
+int my_lstat(const char* path, struct stat* buf) {
+  InterceptGuard guard;
+  if (!guard) return lstat(path, buf);
+  if (!ShouldInterceptPath(path)) return lstat(path, buf);
+
+  if (RecordReplayIsRecording()) {
+    int ret = lstat(path, buf);
+    int saved_errno = errno;
+    RecordReplayValue("lstat.ret", static_cast<uintptr_t>(ret));
+    if (ret == 0 && buf) {
+      RecordReplayBytes("lstat.data", buf, sizeof(*buf));
+    }
+    errno = saved_errno;
+    return ret;
+  }
+  if (RecordReplayIsReplaying()) {
+    RecordReplayValue("lstat.ret", 0);  // consume
+    int ret = lstat(path, buf);
+    if (ret == 0 && buf) {
+      RecordReplayBytes("lstat.data", buf, sizeof(*buf));
+    }
+    return ret;
+  }
+  return lstat(path, buf);
+}
+
+}  // extern "C"
+
+// --- Platform registration ---
+#ifdef __APPLE__
+DYLD_INTERPOSE(my_open, open)
+DYLD_INTERPOSE(my_openat, openat)
+DYLD_INTERPOSE(my_read, read)
+DYLD_INTERPOSE(my_close, close)
+DYLD_INTERPOSE(my_stat, stat)
+DYLD_INTERPOSE(my_fstat, fstat)
+DYLD_INTERPOSE(my_lstat, lstat)
+#endif

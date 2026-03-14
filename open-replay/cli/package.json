@@ -1,0 +1,20 @@
+{
+  "name": "@open-replay/cli",
+  "version": "0.1.0",
+  "description": "Open Replay CLI — record and replay Node.js programs",
+  "bin": {
+    "openreplay": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsx src/index.ts"
+  },
+  "dependencies": {
+    "commander": "^12.0.0"
+  },
+  "devDependencies": {
+    "typescript": "^5.4.0",
+    "tsx": "^4.7.0",
+    "@types/node": "^20.0.0"
+  }
+}
