@@ -392,4 +392,76 @@ void RecordingReader::SeekToCheckpoint(uint32_t checkpoint_id) {
   }
 }
 
+void RecordingReader::PrintReplayReport() const {
+  if (events_.empty()) return;
+
+  // Build reverse hash → name table for known event types
+  static const char* known_names[] = {
+    "gettimeofday", "gettimeofday.ret", "clock_gettime", "clock_gettime.ret",
+    "time", "mach_absolute_time", "arc4random", "arc4random_buf",
+    "getentropy", "getentropy.ret", "RAND_bytes", "RAND_bytes.ret",
+    "open", "openat", "read.ret", "read.data", "close",
+    "stat.ret", "stat.data", "fstat.ret", "fstat.data", "lstat.ret", "lstat.data",
+    "connect.ret", "connect.errno", "send.ret", "sendto.ret",
+    "recv.ret", "recv.data", "sockread.ret", "sockread.data", "sockread.errno",
+    "sockwrite.ret", "poll.ret", "poll.fds",
+  };
+  std::unordered_map<uint32_t, const char*> hash_to_name;
+  for (const auto* name : known_names) {
+    hash_to_name[FnvHash(name)] = name;
+  }
+
+  // Count events per why_hash
+  std::unordered_map<uint32_t, size_t> total_by_hash;
+  for (const auto& ev : events_) {
+    total_by_hash[ev.why_hash]++;
+  }
+
+  // Count consumed events per why_hash (cursor position = consumed count)
+  size_t total_consumed = 0;
+  size_t total_available = events_.size();
+  bool has_divergence = false;
+
+  fprintf(stderr, "[openreplay] === Replay Report ===\n");
+  fprintf(stderr, "[openreplay] Total events: %zu\n", total_available);
+
+  for (const auto& [hash, total] : total_by_hash) {
+    auto it = cursors_.find(hash);
+    size_t consumed = 0;
+    if (it != cursors_.end()) {
+      // Cursor position represents how far we scanned, not exact consumed count.
+      // Count actual consumed = number of matching events before cursor position.
+      size_t cursor_pos = it->second;
+      for (size_t i = 0; i < cursor_pos && i < events_.size(); i++) {
+        if (events_[i].why_hash == hash) consumed++;
+      }
+    }
+    total_consumed += consumed;
+
+    const char* name = hash_to_name.count(hash) ? hash_to_name[hash] : "unknown";
+    if (consumed < total) {
+      fprintf(stderr, "[openreplay]   %s: %zu/%zu consumed", name, consumed, total);
+      if (consumed == 0) {
+        fprintf(stderr, " (UNUSED)\n");
+      } else {
+        fprintf(stderr, " (PARTIAL - %zu remaining)\n", total - consumed);
+        has_divergence = true;
+      }
+    } else {
+      // All consumed — check if replay requested more than available
+      fprintf(stderr, "[openreplay]   %s: %zu/%zu consumed (OK)\n", name, consumed, total);
+    }
+  }
+
+  fprintf(stderr, "[openreplay] Events consumed: %zu/%zu", total_consumed, total_available);
+  if (total_consumed == total_available) {
+    fprintf(stderr, " (PERFECT)\n");
+  } else if (has_divergence) {
+    fprintf(stderr, " (DIVERGED — replay consumed events in different pattern)\n");
+  } else {
+    fprintf(stderr, " (partial — some event types unused)\n");
+  }
+  fprintf(stderr, "[openreplay] ==================\n");
+}
+
 }  // namespace openreplay

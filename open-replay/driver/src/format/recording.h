@@ -152,6 +152,9 @@ class RecordingReader {
   const std::string& metadata() const { return metadata_; }
   size_t total_events() const { return events_.size(); }
 
+  // Divergence detection: report event consumption stats at end of replay
+  void PrintReplayReport() const;
+
  private:
   bool ParseEvents(const uint8_t* data, size_t len);
   bool ParseTail(const uint8_t* data, size_t total_len);

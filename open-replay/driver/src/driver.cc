@@ -242,6 +242,7 @@ void RecordReplayDetach() {
   if (prev == Mode::RECORDING) {
     writer().Close();
   } else if (prev == Mode::REPLAYING) {
+    reader().PrintReplayReport();
     reader().Close();
   }
   pthread_mutex_unlock(&g_mutex);
