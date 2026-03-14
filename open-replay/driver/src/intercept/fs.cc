@@ -106,6 +106,23 @@ static bool IsTrackedFd(int fd) {
 // patterns depending on cwd, which causes event stream misalignment.
 // A future "virtual file system" can replay file content from recording.
 
+/*
+ * 【拦截函数的统一模式】
+ * 每个拦截函数遵循相同的模板：
+ *   1. InterceptGuard guard — 防重入检查（详见 common.h）
+ *   2. if (!guard) → 透传：重入调用不拦截
+ *   3. 路径/fd 过滤 → 透传：不在拦截范围内
+ *   4. if (IsReplaying()) → 透传：当前不支持回放拦截
+ *   5. if (IsRecording()) → 执行真实调用 + 录制返回值
+ *
+ * 注意 errno 保护：录制操作（RecordReplayValue）可能修改 errno，
+ * 必须在调用前保存、调用后恢复，否则上层代码会看到错误的 errno。
+ *
+ * 注意：每个函数里有两段 IsReplaying() 检查——第一段在过滤之前提前返回，
+ * 第二段是录制/回放分支的 dead code（回放已在第一段返回）。
+ * 保留第二段是为了未来启用回放拦截时的代码骨架。
+ */
+
 extern "C" {
 
 int my_open(const char* path, int flags, ...) {
