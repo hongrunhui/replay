@@ -71,6 +71,11 @@ static bool IsTrackedFd(int fd) {
 }
 
 // --- Intercepted functions ---
+//
+// File system interception is RECORDING-ONLY for now.
+// During replay, Node.js module loading produces different stat/open
+// patterns depending on cwd, which causes event stream misalignment.
+// A future "virtual file system" can replay file content from recording.
 
 extern "C" {
 
@@ -85,6 +90,8 @@ int my_open(const char* path, int flags, ...) {
   InterceptGuard guard;
   if (!guard) return open(path, flags, mode);
   if (!ShouldInterceptPath(path)) return open(path, flags, mode);
+  // Skip fs interception during replay (recording-only for now)
+  if (RecordReplayIsReplaying()) return open(path, flags, mode);
 
   if (RecordReplayIsRecording()) {
     int ret = open(path, flags, mode);
@@ -118,6 +125,7 @@ int my_openat(int dirfd, const char* path, int flags, ...) {
   InterceptGuard guard;
   if (!guard) return openat(dirfd, path, flags, mode);
   if (!ShouldInterceptPath(path)) return openat(dirfd, path, flags, mode);
+  if (RecordReplayIsReplaying()) return openat(dirfd, path, flags, mode);
 
   if (RecordReplayIsRecording()) {
     int ret = openat(dirfd, path, flags, mode);
@@ -142,6 +150,7 @@ int my_openat(int dirfd, const char* path, int flags, ...) {
 ssize_t my_read(int fd, void* buf, size_t count) {
   InterceptGuard guard;
   if (!guard) return read(fd, buf, count);
+  if (RecordReplayIsReplaying()) return read(fd, buf, count);
   if (!IsTrackedFd(fd)) return read(fd, buf, count);
 
   if (RecordReplayIsRecording()) {
@@ -167,6 +176,7 @@ ssize_t my_read(int fd, void* buf, size_t count) {
 int my_close(int fd) {
   InterceptGuard guard;
   if (!guard) return close(fd);
+  if (RecordReplayIsReplaying()) return close(fd);
 
   bool was_tracked = IsTrackedFd(fd);
   if (was_tracked) UntrackFd(fd);
@@ -190,6 +200,7 @@ int my_close(int fd) {
 int my_stat(const char* path, struct stat* buf) {
   InterceptGuard guard;
   if (!guard) return stat(path, buf);
+  if (RecordReplayIsReplaying()) return stat(path, buf);
   if (!ShouldInterceptPath(path)) return stat(path, buf);
 
   if (RecordReplayIsRecording()) {
@@ -218,6 +229,7 @@ int my_stat(const char* path, struct stat* buf) {
 int my_fstat(int fd, struct stat* buf) {
   InterceptGuard guard;
   if (!guard) return fstat(fd, buf);
+  if (RecordReplayIsReplaying()) return fstat(fd, buf);
   if (!IsTrackedFd(fd)) return fstat(fd, buf);
 
   if (RecordReplayIsRecording()) {
@@ -244,6 +256,7 @@ int my_fstat(int fd, struct stat* buf) {
 int my_lstat(const char* path, struct stat* buf) {
   InterceptGuard guard;
   if (!guard) return lstat(path, buf);
+  if (RecordReplayIsReplaying()) return lstat(path, buf);
   if (!ShouldInterceptPath(path)) return lstat(path, buf);
 
   if (RecordReplayIsRecording()) {
