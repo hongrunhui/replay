@@ -239,7 +239,7 @@ export class ReplayEngine extends EventEmitter {
         }
       };
       this.on('stderr', onStderr);
-      setTimeout(resolve, 4000);  // fallback
+      setTimeout(resolve, 8000);  // fallback — replay mode takes longer to init
     });
 
     // Connect WebSocket to inspector
@@ -367,6 +367,94 @@ export class ReplayEngine extends EventEmitter {
     return new Promise((resolve) => this.once('exit', resolve));
   }
 
+  /*
+   * 【时间旅行核心】runToLine — 回退到指定位置
+   *
+   * 原理：因为回放是确定性的（时间/随机/网络都从录制数据返回），
+   * "回退" 等价于杀掉当前进程 → 重新启动 → 运行到目标行。
+   * 每次 runToLine 都是从头重放，但由于所有非确定性值都来自录制，
+   * 程序一定会走到完全相同的执行路径。
+   *
+   * 性能：对短脚本（<1s）几乎无延迟。长脚本需要 checkpoint 优化（Phase 10.1）。
+   */
+  async runToLine(fileUrl: string, lineNumber: number): Promise<PauseState | null> {
+    // Kill current process and fully reset
+    await this.stop();
+    this.scriptUrls.clear();
+    this.cdpEventHandlers.clear();
+    this.currentPause = null;
+    this.nextMsgId = 1;
+
+    // Start fresh process with inspector
+    const { nodePath, env, scriptPath } = this.buildSpawnConfig();
+    this.inspectorPort = 9200 + Math.floor(Math.random() * 800);
+    const header = parseRecordingHeader(this.opts.recordingPath);
+    const nodeArgs: string[] = [`--inspect-brk=${this.inspectorPort}`];
+    if (header.randomSeed) nodeArgs.push(`--random-seed=${header.randomSeed}`);
+    nodeArgs.push(scriptPath || '-e void 0');
+
+    this.child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    this.child.stderr?.on('data', (d: Buffer) => {
+      const msg = d.toString();
+      process.stderr.write(`[child] ${msg}`);
+      this.emit('stderr', msg);
+    });
+    this.child.stdout?.on('data', (d: Buffer) => this.emit('stdout', d.toString()));
+    this.child.on('exit', (code) => this.emit('exit', code ?? 0));
+
+    await this.waitForInspector();
+
+    // Register handlers
+    this.onCDPEvent('Debugger.scriptParsed', (p: any) => {
+      if (p?.url) this.scriptUrls.set(p.scriptId, p.url);
+    });
+    this.onCDPEvent('Debugger.paused', (p: any) => {
+      this.currentPause = { frames: p?.callFrames || [] };
+      this.emit('paused', this.currentPause);
+    });
+    this.onCDPEvent('Debugger.resumed', () => {
+      this.currentPause = null;
+    });
+
+    // Enable domains
+    await this.sendCDP('Runtime.enable');
+    await this.sendCDP('Debugger.enable');
+
+    // Release --inspect-brk hold
+    await this.sendCDP('Runtime.runIfWaitingForDebugger');
+
+    // Step 1: Wait for "Break on start" pause
+    const initialPause = await new Promise<boolean>((resolve) => {
+      if (this.currentPause) { resolve(true); return; }
+      const h = () => resolve(true);
+      this.once('paused', h);
+      setTimeout(() => { this.off('paused', h); resolve(false); }, 5000);
+    });
+    if (!initialPause) return null;
+
+    // Step 2: Now we're paused at "Break on start". Set the breakpoint.
+    const urlRegex = `.*${fileUrl.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')}.*`;
+    await this.sendCDP('Debugger.setBreakpointByUrl', { urlRegex, lineNumber });
+
+    // Step 3: Resume — script runs until it hits the breakpoint
+    await this.resume();
+
+    // Step 4: Wait for our breakpoint to hit
+    return new Promise<PauseState | null>((resolve) => {
+      const onPause = () => {
+        if (!this.currentPause) return;
+        // Accept any pause at or near the target line
+        this.off('paused', onPause);
+        resolve(this.currentPause);
+      };
+      this.on('paused', onPause);
+      // If already paused (breakpoint hit during resume), check immediately
+      if (this.currentPause) { resolve(this.currentPause); return; }
+      this.once('exit', () => { this.off('paused', onPause); resolve(null); });
+      setTimeout(() => { this.off('paused', onPause); resolve(null); }, 10000);
+    });
+  }
+
   getRecordingInfo(): { path: string; size: number; header: ReturnType<typeof parseRecordingHeader> } {
     const buf = readFileSync(this.opts.recordingPath);
     return {
@@ -396,6 +484,7 @@ export function parseRecordingHeader(path: string): {
   timestamp: number;
   buildId: string;
   scriptPath?: string;
+  randomSeed?: number;
 } {
   const buf = readFileSync(path);
   if (buf.length < 64) throw new Error('Recording file too small');
@@ -418,6 +507,7 @@ export function parseRecordingHeader(path: string): {
       try {
         const json = JSON.parse(buf.subarray(i + 9, i + 9 + dataLen).toString('utf8'));
         if (json.scriptPath) header.scriptPath = json.scriptPath;
+        if (json.randomSeed) header.randomSeed = json.randomSeed;
       } catch { /* ignore malformed metadata */ }
     }
     i += 9 + dataLen;

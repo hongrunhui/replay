@@ -95,6 +95,36 @@ export class CDPProtocolHandler {
         return {};
       }
 
+      // Time travel: restart replay and run to a specific line
+      case 'Recording.runToLine': {
+        const file = params.file as string;
+        const line = params.line as number;
+        // Ensure engine object exists (don't start it — runToLine does its own start)
+        this.session.ensureEngine();
+        const eng = this.session.engine;
+        if (!eng) throw new Error('Engine not available');
+        try {
+          const state = await eng.runToLine(file, line);
+          if (!state) return { paused: false, frames: [], reason: 'timeout or script ended' };
+          const top = state.frames[0];
+          return {
+            paused: true,
+            line: top?.lineNumber ?? -1,
+            column: top?.columnNumber ?? 0,
+            functionName: top?.functionName || '(anonymous)',
+            frames: state.frames.map((f: any) => ({
+              frameId: f.callFrameId,
+              functionName: f.functionName,
+              line: f.lineNumber,
+              column: f.columnNumber,
+              url: f.url,
+            })),
+          };
+        } catch (e: any) {
+          return { paused: false, frames: [], error: e.message };
+        }
+      }
+
       case 'Recording.runToCompletion': {
         if (engine) {
           const exitCode = await engine.runToCompletion();
