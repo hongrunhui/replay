@@ -292,6 +292,17 @@ export class CDPProtocolHandler {
         if (!eng) throw new Error('Engine not available');
         try {
           const counts = await eng.collectHitCounts(file);
+
+          // Warm up checkpoint pool in background (for fast backward jumps later)
+          const totalLines = Object.keys(counts).length;
+          if (totalLines > 0) {
+            const info = await this.session.engine?.getRecordingInfo();
+            const scriptPath = info?.header?.scriptPath;
+            if (scriptPath) {
+              this.session.checkpointPool.warmUp(totalLines, scriptPath).catch(() => {});
+            }
+          }
+
           return { counts };
         } catch (e: any) {
           return { counts: {}, error: e.message };
