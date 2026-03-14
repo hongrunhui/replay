@@ -387,9 +387,9 @@ export class ReplayEngine extends EventEmitter {
 
     const header = parseRecordingHeader(this.opts.recordingPath);
 
-    // Use --inspect (not --inspect-brk) so we can connect but script runs
+    // Use --inspect-brk so we can start profiler BEFORE script runs
     const port = 9200 + Math.floor(Math.random() * 800);
-    const nodeArgs: string[] = [`--inspect=${port}`];
+    const nodeArgs: string[] = [`--inspect-brk=${port}`];
     if (header.randomSeed) nodeArgs.push(`--random-seed=${header.randomSeed}`);
     nodeArgs.push(scriptPath);
 
@@ -400,7 +400,7 @@ export class ReplayEngine extends EventEmitter {
       child.stderr?.on('data', (d: Buffer) => {
         if (d.toString().includes('Debugger listening')) resolve();
       });
-      setTimeout(resolve, 5000);
+      setTimeout(resolve, 8000);
     });
 
     // Connect to inspector
@@ -419,7 +419,7 @@ export class ReplayEngine extends EventEmitter {
     }
 
     try {
-      // Enable profiler with precise coverage
+      // Enable profiler BEFORE script runs (--inspect-brk holds it)
       await this.sendCDP('Profiler.enable');
       await this.sendCDP('Profiler.startPreciseCoverage', {
         callCount: true,
@@ -428,9 +428,16 @@ export class ReplayEngine extends EventEmitter {
       await this.sendCDP('Runtime.enable');
       await this.sendCDP('Debugger.enable');
 
+      // Release --inspect-brk → script runs with profiler active
+      await this.sendCDP('Runtime.runIfWaitingForDebugger');
+
       // Wait for script to finish
       await new Promise<void>((resolve) => {
         child.on('exit', () => resolve());
+        // Also listen for Debugger.paused (Break on start) and resume
+        this.onCDPEvent('Debugger.paused', () => {
+          this.sendCDP('Debugger.resume').catch(() => {});
+        });
         setTimeout(resolve, 15000);
       });
 
