@@ -56,6 +56,18 @@ export class CDPProtocolHandler {
       case 'Recording.getSources':
         return { sources: this.session.getSources() };
 
+      // Read a local file by path (for loading script source in DevTools UI)
+      case 'Recording.readFile': {
+        const filePath = params.path as string;
+        try {
+          const { readFileSync } = await import('node:fs');
+          const contents = readFileSync(filePath, 'utf8');
+          return { contents, contentType: 'text/javascript' };
+        } catch (e: any) {
+          return { contents: '', error: e.message };
+        }
+      }
+
       case 'Recording.getSourceContents': {
         if (engine) {
           try {

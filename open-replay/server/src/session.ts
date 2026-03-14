@@ -94,6 +94,7 @@ export class ReplaySession {
     return {
       sessionId: this._sessionId,
       recordingPath: this._recordingPath,
+      scriptPath: this._header?.scriptPath || '',
       timestamp: this._header?.timestamp || 0,
       buildId: this._header?.buildId || '',
       title: this._recordingPath.split('/').pop() || '',
