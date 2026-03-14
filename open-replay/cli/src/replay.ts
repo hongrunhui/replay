@@ -7,6 +7,8 @@ import { getDriverPath, getRecordingsDir } from './utils.js';
 interface ReplayOptions {
   port?: string;
   server?: boolean;
+  debug?: boolean;
+  inspectPort?: string;
   node?: string;
 }
 
@@ -68,34 +70,49 @@ async function directReplay(recordingPath: string, options: ReplayOptions) {
   const nodeBin = options.node || 'node';
   const env: Record<string, string> = {
     ...process.env as Record<string, string>,
-    OPENREPLAY_MODE: 'replay',
-    REPLAY_RECORDING: recordingPath,
   };
 
-  if (process.platform === 'darwin') {
-    env.DYLD_INSERT_LIBRARIES = driverPath;
-  } else {
-    env.LD_PRELOAD = driverPath;
+  // Debug mode: run WITHOUT driver injection (inspector conflicts with
+  // DYLD_INTERPOSE in REPLAYING mode). Only --random-seed is used for
+  // deterministic Math.random(). Time and crypto won't be replayed but
+  // code paths stay the same if they don't branch on time values.
+  const inspectPort = options.inspectPort || '9229';
+  if (!options.debug) {
+    env.OPENREPLAY_MODE = 'replay';
+    env.REPLAY_RECORDING = recordingPath;
+    if (process.platform === 'darwin') {
+      env.DYLD_INSERT_LIBRARIES = driverPath;
+    } else {
+      env.LD_PRELOAD = driverPath;
+    }
   }
 
-  // Pass the same V8 random seed that was used during recording.
-  // This ensures Math.random() produces the identical sequence.
   const nodeArgs: string[] = [];
   if (meta.randomSeed) {
     nodeArgs.push(`--random-seed=${meta.randomSeed}`);
   }
+  if (options.debug) {
+    nodeArgs.push(`--inspect-brk=${inspectPort}`);
+  }
+
   nodeArgs.push(meta.scriptPath);
 
   console.error(`Replaying: ${recordingPath}`);
   console.error(`Script: ${meta.scriptPath}`);
   if (meta.randomSeed) console.error(`Random seed: ${meta.randomSeed}`);
+  if (options.debug) {
+    console.error(`\nDebugger listening on ws://127.0.0.1:${inspectPort}`);
+    console.error(`Open Chrome and navigate to: chrome://inspect`);
+    console.error(`Or open: devtools://devtools/bundled/js_app.html?ws=127.0.0.1:${inspectPort}`);
+    console.error(`\nWaiting for debugger to connect...`);
+  }
 
   const child = spawn(nodeBin, nodeArgs, {
     env,
     stdio: ['inherit', 'inherit', 'pipe'],
   });
 
-  // Filter out openreplay messages from stderr
+  // Filter out openreplay messages from stderr (keep inspector + errors)
   child.stderr?.on('data', (data: Buffer) => {
     const text = data.toString();
     for (const line of text.split('\n')) {
@@ -104,6 +121,11 @@ async function directReplay(recordingPath: string, options: ReplayOptions) {
       }
     }
   });
+
+  // In debug mode, wait for the child to exit (it won't until debugger disconnects)
+  if (options.debug) {
+    return; // Don't set up close handler — let the process run interactively
+  }
 
   child.on('close', (code) => {
     process.exit(code ?? 0);

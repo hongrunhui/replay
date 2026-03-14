@@ -30,6 +30,8 @@ program
   .description('Replay a recording (UUID, partial UUID, or path)')
   .option('-p, --port <port>', 'WebSocket port (with --server)', '1234')
   .option('--server', 'Start a WebSocket replay server instead of direct replay')
+  .option('--debug', 'Start with debugger (--inspect-brk), connect via Chrome DevTools')
+  .option('--inspect-port <port>', 'Inspector port for --debug mode', '9229')
   .option('--node <path>', 'Path to Node.js binary')
   .action(replay);
 
