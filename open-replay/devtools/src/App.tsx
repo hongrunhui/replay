@@ -73,9 +73,13 @@ export function App() {
 
       // Collect line execution counts in background
       if (scriptPath) {
+        console.log('[devtools] Collecting hit counts for:', scriptPath);
         client.collectHitCounts(scriptPath).then(counts => {
+          console.log('[devtools] Hit counts received:', Object.keys(counts).length, 'lines');
           setState(s => ({ ...s, hitCounts: counts, status: s.status.replace(' — collecting hit counts...', '') }));
-        }).catch(() => {});
+        }).catch(err => {
+          console.error('[devtools] Hit count collection failed:', err);
+        });
       }
     } catch (e: any) {
       setState(s => ({ ...s, status: `Error: ${e.message}`, loading: false }));

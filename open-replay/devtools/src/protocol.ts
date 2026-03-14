@@ -118,8 +118,27 @@ export class ReplayClient {
   }
 
   async collectHitCounts(file: string): Promise<Record<number, number>> {
-    const r = await this.send('Recording.collectHitCounts', { file });
+    // This spawns a replay process with profiler — can take 15+ seconds
+    const r = await this.sendWithTimeout('Recording.collectHitCounts', { file }, 60000);
     return r?.counts || {};
+  }
+
+  private sendWithTimeout(method: string, params: Record<string, unknown>, timeoutMs: number): Promise<any> {
+    if (!this.ws || this.ws.readyState !== WebSocket.OPEN) {
+      return Promise.reject(new Error('Not connected'));
+    }
+    const id = this.nextId++;
+    return new Promise((resolve, reject) => {
+      const timeout = setTimeout(() => {
+        this.pending.delete(id);
+        reject(new Error('Request timeout'));
+      }, timeoutMs);
+      this.pending.set(id, {
+        resolve: (v: any) => { clearTimeout(timeout); resolve(v); },
+        reject: (e: Error) => { clearTimeout(timeout); reject(e); },
+      });
+      this.ws!.send(JSON.stringify({ id, method, params }));
+    });
   }
 
   async readFile(path: string): Promise<string> {
