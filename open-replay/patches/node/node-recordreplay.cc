@@ -27,6 +27,8 @@ typedef void (*BytesFn)(const char*, void*, size_t);
 typedef uint64_t* (*ProgressCounterFn)();
 typedef uint64_t* (*TargetProgressFn)();
 typedef void (*NewCheckpointFn)();
+typedef void (*PassThroughFn)();
+typedef int (*ArePassedThroughFn)();
 
 static AttachFn fn_attach = nullptr;
 static FinishRecordingFn fn_finish = nullptr;
@@ -40,6 +42,9 @@ static BytesFn fn_bytes = nullptr;
 static ProgressCounterFn fn_progress = nullptr;
 static TargetProgressFn fn_target = nullptr;
 static NewCheckpointFn fn_checkpoint = nullptr;
+static PassThroughFn fn_begin_passthrough = nullptr;
+static PassThroughFn fn_end_passthrough = nullptr;
+static ArePassedThroughFn fn_are_passedthrough = nullptr;
 
 #define RESOLVE(handle, name, type) \
   fn_##name = reinterpret_cast<type>(dlsym(handle, "RecordReplay" #name)); \
@@ -87,6 +92,9 @@ bool InitializeDriver() {
   fn_progress = reinterpret_cast<ProgressCounterFn>(dlsym(driver_handle, "RecordReplayProgressCounter"));
   fn_target = reinterpret_cast<TargetProgressFn>(dlsym(driver_handle, "RecordReplayTargetProgress"));
   fn_checkpoint = reinterpret_cast<NewCheckpointFn>(dlsym(driver_handle, "RecordReplayNewCheckpoint"));
+  fn_begin_passthrough = reinterpret_cast<PassThroughFn>(dlsym(driver_handle, "RecordReplayBeginPassThroughEvents"));
+  fn_end_passthrough = reinterpret_cast<PassThroughFn>(dlsym(driver_handle, "RecordReplayEndPassThroughEvents"));
+  fn_are_passedthrough = reinterpret_cast<ArePassedThroughFn>(dlsym(driver_handle, "RecordReplayAreEventsPassedThrough"));
 
   if (!fn_attach) {
     fprintf(stderr, "[openreplay] Driver loaded but missing RecordReplayAttach\n");
@@ -117,6 +125,17 @@ bool IsRecording() {
 }
 bool IsReplaying() {
   return fn_is_rep && fn_is_rep();
+}
+
+// PassThrough API — lets inspector I/O bypass recording/replaying
+void BeginPassThroughEvents() {
+  if (fn_begin_passthrough) fn_begin_passthrough();
+}
+void EndPassThroughEvents() {
+  if (fn_end_passthrough) fn_end_passthrough();
+}
+bool AreEventsPassedThrough() {
+  return fn_are_passedthrough && fn_are_passedthrough();
 }
 
 }  // namespace recordreplay

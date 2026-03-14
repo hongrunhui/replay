@@ -99,6 +99,16 @@ static uint64_t g_target_progress = 0;
 static CDPMessageCallback g_cdp_callback = nullptr;
 
 /*
+ * 【事件透传机制】
+ * 当 g_passthrough_depth > 0 时，所有拦截器直通到真实系统调用，
+ * 不录制也不回放。这让 inspector 的网络 I/O 完全绕过录制流。
+ *
+ * 使用方式：inspector 代码在做 I/O 前调用 BeginPassThrough，
+ * 完成后调用 EndPassThrough。可嵌套调用。
+ */
+static int g_passthrough_depth = 0;
+
+/*
  * 【fork() 检查点系统】
  *
  * 回放时每隔 N 个时间事件，调用 fork() 创建子进程快照。
@@ -433,6 +443,18 @@ static void cleanup_fork_checkpoints() {
     waitpid(g_fork_checkpoints[i].pid, nullptr, WNOHANG);
   }
   g_fork_checkpoint_count = 0;
+}
+
+void RecordReplayBeginPassThroughEvents() {
+  g_passthrough_depth++;
+}
+
+void RecordReplayEndPassThroughEvents() {
+  if (g_passthrough_depth > 0) g_passthrough_depth--;
+}
+
+int RecordReplayAreEventsPassedThrough() {
+  return g_passthrough_depth > 0 ? 1 : 0;
 }
 
 void RecordReplayLog(const char* format, ...) {

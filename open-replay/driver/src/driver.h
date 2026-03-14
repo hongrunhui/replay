@@ -106,6 +106,14 @@ void RecordReplaySetMetadata(const char* json);
 // Get the metadata JSON string from the recording (replay mode only).
 const char* RecordReplayGetMetadata();
 
+// --- Event PassThrough (for inspector I/O bypass) ---
+
+// Begin passthrough mode — all syscalls go directly to OS, not recorded/replayed.
+// Used by the inspector to avoid interfering with the recording stream.
+void RecordReplayBeginPassThroughEvents();
+void RecordReplayEndPassThroughEvents();
+int RecordReplayAreEventsPassedThrough();
+
 // --- Logging ---
 
 void RecordReplayLog(const char* format, ...);

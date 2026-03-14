@@ -77,7 +77,8 @@ extern int g_intercept_depth;
 struct InterceptGuard {
   bool active;
   InterceptGuard() : active(g_intercept_depth == 0 &&
-                            RecordReplayIsRecordingOrReplaying()) {
+                            RecordReplayIsRecordingOrReplaying() &&
+                            !RecordReplayAreEventsPassedThrough()) {
     g_intercept_depth++;
   }
   ~InterceptGuard() { g_intercept_depth--; }
