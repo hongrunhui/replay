@@ -377,8 +377,11 @@ export class ReplayEngine extends EventEmitter {
    *
    * 性能：对短脚本（<1s）几乎无延迟。长脚本需要 checkpoint 优化（Phase 10.1）。
    */
+  // Get PIDs of fork checkpoint children (from driver stderr output)
+  private forkCheckpointPids: Array<{ pid: number; events: number }> = [];
+
   async runToLine(fileUrl: string, lineNumber: number): Promise<PauseState | null> {
-    // Kill current process and fully reset
+    // Kill current process (but fork checkpoint children survive — they're independent)
     await this.stop();
     this.scriptUrls.clear();
     this.cdpEventHandlers.clear();
@@ -396,6 +399,14 @@ export class ReplayEngine extends EventEmitter {
     this.child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
     this.child.stderr?.on('data', (d: Buffer) => {
       const msg = d.toString();
+      // Capture fork checkpoint PIDs from driver output
+      const cpMatch = msg.match(/Fork checkpoint #(\d+) created \(child pid (\d+), events (\d+)\)/);
+      if (cpMatch) {
+        this.forkCheckpointPids.push({
+          pid: parseInt(cpMatch[2], 10),
+          events: parseInt(cpMatch[3], 10),
+        });
+      }
       process.stderr.write(`[child] ${msg}`);
       this.emit('stderr', msg);
     });
@@ -495,6 +506,7 @@ export function parseRecordingHeader(path: string): {
     timestamp: Number(buf.readBigUInt64LE(16)),
     buildId: buf.subarray(24, 56).toString('ascii').replace(/\0+$/, ''),
     scriptPath: undefined as string | undefined,
+    randomSeed: undefined as number | undefined,
   };
 
   // Scan event stream for METADATA events (type=0x20)

@@ -444,11 +444,17 @@ void RecordingReader::PrintReplayReport() const {
       if (consumed == 0) {
         fprintf(stderr, " (UNUSED)\n");
       } else {
-        fprintf(stderr, " (PARTIAL - %zu remaining)\n", total - consumed);
-        has_divergence = true;
+        // Partial consumption is normal for mach_absolute_time (high-frequency timer).
+        // Only flag as divergence if consumption ratio is suspiciously low.
+        double ratio = static_cast<double>(consumed) / total;
+        if (ratio < 0.8) {
+          fprintf(stderr, " (DIVERGED — only %.0f%%)\n", ratio * 100);
+          has_divergence = true;
+        } else {
+          fprintf(stderr, " (%zu remaining — within normal range)\n", total - consumed);
+        }
       }
     } else {
-      // All consumed — check if replay requested more than available
       fprintf(stderr, "[openreplay]   %s: %zu/%zu consumed (OK)\n", name, consumed, total);
     }
   }

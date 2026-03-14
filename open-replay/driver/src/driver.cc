@@ -376,19 +376,20 @@ int RecordReplayForkCheckpoint() {
 
   if (pid == 0) {
     // Child process: this IS the checkpoint.
-    // Wait for SIGUSR1 to continue, or SIGTERM to die.
+    // Use SIGCONT to resume, SIGTERM to die.
+    // SIGUSR1 is reserved for Node.js inspector activation.
     sigset_t set;
     sigemptyset(&set);
-    sigaddset(&set, SIGUSR1);
+    sigaddset(&set, SIGCONT);
     sigaddset(&set, SIGTERM);
     int sig;
     sigwait(&set, &sig);
 
     if (sig == SIGTERM) _exit(0);
 
-    // SIGUSR1 received — we're being restored!
-    // The process continues from exactly where fork() returned.
-    fprintf(stderr, "[openreplay] Checkpoint restored (pid %d)\n", getpid());
+    // SIGCONT received — we're being restored!
+    fprintf(stderr, "[openreplay] Checkpoint restored (pid %d, events %d)\n",
+            getpid(), g_replay_event_count);
     return g_fork_checkpoint_count;  // return our index
   }
 
@@ -404,8 +405,8 @@ int RecordReplayForkCheckpoint() {
 int RecordReplayRestoreCheckpoint(int checkpoint_index) {
   if (checkpoint_index < 0 || checkpoint_index >= g_fork_checkpoint_count) return -1;
   pid_t pid = g_fork_checkpoints[checkpoint_index].pid;
-  // Wake up the checkpoint child
-  if (kill(pid, SIGUSR1) != 0) return -1;
+  // Wake up the checkpoint child with SIGCONT
+  if (kill(pid, SIGCONT) != 0) return -1;
   return pid;
 }
 
