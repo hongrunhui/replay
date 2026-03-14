@@ -403,96 +403,110 @@ export class ReplayEngine extends EventEmitter {
       setTimeout(resolve, 8000);
     });
 
-    // Connect to inspector
-    const prevWs = this.ws;
-    const prevChild = this.child;
-    const prevPort = this.inspectorPort;
-    this.inspectorPort = port;
-
-    try {
-      await this.connectWS();
-    } catch {
-      child.kill();
-      this.ws = prevWs;
-      this.inspectorPort = prevPort;
-      return {};
-    }
-
-    try {
-      // Enable profiler BEFORE script runs (--inspect-brk holds it)
-      await this.sendCDP('Profiler.enable');
-      await this.sendCDP('Profiler.startPreciseCoverage', {
-        callCount: true,
-        detailed: true,
+    // Use a completely independent WebSocket connection (don't touch this.ws)
+    const wsUrl = await new Promise<string>((resolve, reject) => {
+      const req = http.get(`http://127.0.0.1:${port}/json`, (res) => {
+        let body = '';
+        res.on('data', (d: Buffer) => { body += d.toString(); });
+        res.on('end', () => {
+          try {
+            const url = JSON.parse(body)[0]?.webSocketDebuggerUrl;
+            url ? resolve(url) : reject(new Error('No WS URL'));
+          } catch (e) { reject(e); }
+        });
       });
-      await this.sendCDP('Runtime.enable');
-      await this.sendCDP('Debugger.enable');
+      req.on('error', reject);
+      setTimeout(() => reject(new Error('timeout')), 8000);
+    }).catch(() => '');
 
-      // Release --inspect-brk → script runs with profiler active
-      await this.sendCDP('Runtime.runIfWaitingForDebugger');
+    if (!wsUrl) { child.kill(); return {}; }
+
+    // Independent CDP connection for coverage collection
+    const tmpWs = new WebSocket(wsUrl);
+    let tmpId = 1;
+    const tmpPending = new Map<number, { resolve: (v: any) => void }>();
+
+    await new Promise<void>((resolve, reject) => {
+      tmpWs.once('open', resolve);
+      tmpWs.once('error', reject);
+      setTimeout(reject, 5000);
+    }).catch(() => { child.kill(); return {}; });
+
+    tmpWs.on('message', (data: Buffer) => {
+      const msg = JSON.parse(data.toString());
+      if (msg.id !== undefined) {
+        const p = tmpPending.get(msg.id);
+        if (p) { tmpPending.delete(msg.id); p.resolve(msg.result); }
+      }
+      // Auto-resume any pause (Break on start)
+      if (msg.method === 'Debugger.paused') {
+        tmpWs.send(JSON.stringify({ id: tmpId++, method: 'Debugger.resume', params: {} }));
+      }
+    });
+
+    const tmpSend = (method: string, params: Record<string, unknown> = {}): Promise<any> => {
+      const id = tmpId++;
+      return new Promise((resolve) => {
+        tmpPending.set(id, { resolve });
+        tmpWs.send(JSON.stringify({ id, method, params }));
+        setTimeout(() => { tmpPending.delete(id); resolve(null); }, 15000);
+      });
+    };
+
+    try {
+      // Start profiler BEFORE script runs
+      await tmpSend('Profiler.enable');
+      await tmpSend('Profiler.startPreciseCoverage', { callCount: true, detailed: true });
+      await tmpSend('Runtime.enable');
+      await tmpSend('Debugger.enable');
+      await tmpSend('Runtime.runIfWaitingForDebugger');
 
       // Wait for script to finish
       await new Promise<void>((resolve) => {
         child.on('exit', () => resolve());
-        // Also listen for Debugger.paused (Break on start) and resume
-        this.onCDPEvent('Debugger.paused', () => {
-          this.sendCDP('Debugger.resume').catch(() => {});
-        });
         setTimeout(resolve, 15000);
       });
 
       // Collect coverage
-      const coverage = await this.sendCDP('Profiler.takePreciseCoverage') as any;
-      const result = coverage?.result || [];
+      const coverage = await tmpSend('Profiler.takePreciseCoverage');
+      const scripts = coverage?.result || [];
 
-      // Find the target script and convert function coverage to line counts
       const counts: Record<number, number> = {};
       const filename = targetFile.split('/').pop() || targetFile;
 
-      for (const script of result) {
-        if (!script.url || (!script.url.includes(filename) && !script.url.includes(targetFile))) continue;
+      for (const script of scripts) {
+        if (!script.url?.includes(filename)) continue;
 
-        // Get source to map byte offsets to line numbers
-        let source = '';
-        try {
-          const src = await this.sendCDP('Debugger.getScriptSource', { scriptId: script.scriptId }) as any;
-          source = src?.scriptSource || '';
-        } catch { continue; }
-
+        // Get source to map byte offsets to lines
+        const src = await tmpSend('Debugger.getScriptSource', { scriptId: script.scriptId });
+        const source: string = src?.scriptSource || '';
         if (!source) continue;
 
-        // Build offset → line number mapping
-        const lineOffsets: number[] = [0];
+        const lineOffsets = [0];
         for (let i = 0; i < source.length; i++) {
           if (source[i] === '\n') lineOffsets.push(i + 1);
         }
-        const offsetToLine = (offset: number): number => {
+        const offsetToLine = (offset: number) => {
           for (let i = lineOffsets.length - 1; i >= 0; i--) {
             if (lineOffsets[i] <= offset) return i;
           }
           return 0;
         };
 
-        // Convert function ranges to line hit counts
         for (const func of script.functions) {
           for (const range of func.ranges) {
             if (range.count === 0) continue;
-            const startLine = offsetToLine(range.startOffset);
-            const endLine = offsetToLine(range.endOffset);
-            for (let line = startLine; line <= endLine; line++) {
+            const s = offsetToLine(range.startOffset);
+            const e = offsetToLine(range.endOffset);
+            for (let line = s; line <= e; line++) {
               counts[line] = Math.max(counts[line] || 0, range.count);
             }
           }
         }
       }
-
       return counts;
     } finally {
-      // Cleanup
-      if (this.ws) this.ws.close();
-      this.ws = prevWs;
-      this.child = prevChild;
-      this.inspectorPort = prevPort;
+      tmpWs.close();
       child.kill();
     }
   }
