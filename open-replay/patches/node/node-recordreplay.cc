@@ -48,6 +48,9 @@ static NewCheckpointFn fn_checkpoint = nullptr;
 static PassThroughFn fn_begin_passthrough = nullptr;
 static PassThroughFn fn_end_passthrough = nullptr;
 static ArePassedThroughFn fn_are_passedthrough = nullptr;
+static OnInstrumentationFn fn_on_instrumentation = nullptr;
+static BeginTraceFn fn_begin_trace = nullptr;
+static EndTraceFn fn_end_trace = nullptr;
 
 #define RESOLVE(handle, name, type) \
   fn_##name = reinterpret_cast<type>(dlsym(handle, "RecordReplay" #name)); \
@@ -98,6 +101,9 @@ bool InitializeDriver() {
   fn_begin_passthrough = reinterpret_cast<PassThroughFn>(dlsym(driver_handle, "RecordReplayBeginPassThroughEvents"));
   fn_end_passthrough = reinterpret_cast<PassThroughFn>(dlsym(driver_handle, "RecordReplayEndPassThroughEvents"));
   fn_are_passedthrough = reinterpret_cast<ArePassedThroughFn>(dlsym(driver_handle, "RecordReplayAreEventsPassedThrough"));
+  fn_on_instrumentation = reinterpret_cast<OnInstrumentationFn>(dlsym(driver_handle, "RecordReplayOnInstrumentation"));
+  fn_begin_trace = reinterpret_cast<BeginTraceFn>(dlsym(driver_handle, "RecordReplayBeginCollectingTrace"));
+  fn_end_trace = reinterpret_cast<EndTraceFn>(dlsym(driver_handle, "RecordReplayEndCollectingTrace"));
 
   if (!fn_attach) {
     fprintf(stderr, "[openreplay] Driver loaded but missing RecordReplayAttach\n");
@@ -168,7 +174,10 @@ void OnTargetProgressReached() {
 }
 
 void OnInstrumentation(const char* kind, int function_id, int offset) {
-  // TODO: Phase 4 — check breakpoints, pause execution
+  // Forward to driver for hit count collection
+  if (node::recordreplay::fn_on_instrumentation) {
+    node::recordreplay::fn_on_instrumentation(function_id, offset);
+  }
 }
 
 void Assert(const char* site, uint64_t value_hash) {
