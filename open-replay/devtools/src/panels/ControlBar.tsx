@@ -8,27 +8,36 @@ type Props = {
   onStepForward: () => void;
   onStepBackward: () => void;
   onJumpToStart: () => void;
+  onRunToCompletion: () => void;
 };
 
 export function ControlBar({
   currentLine, totalLines, loading,
-  onJumpToLine, onStepForward, onStepBackward, onJumpToStart,
+  onJumpToLine, onStepForward, onStepBackward, onJumpToStart, onRunToCompletion,
 }: Props) {
   return (
     <div className="control-bar">
       <button onClick={onJumpToStart} disabled={loading} title="Jump to start">
-        ⏮
+        &#x23EE;
       </button>
-      <button onClick={onStepBackward} disabled={loading || currentLine === null || currentLine <= 0} title="Step back">
-        ◀
+      <button onClick={onStepBackward} disabled={loading || currentLine === null || currentLine <= 0} title="Step back (Shift+F8)">
+        &#x25C0;
       </button>
-      <button onClick={onStepForward} disabled={loading || currentLine === null} title="Step forward">
-        ▶
+      <button onClick={onStepForward} disabled={loading || currentLine === null} title="Step forward (F8 / Ctrl+Enter)">
+        &#x25B6;
+      </button>
+      <button
+        onClick={onRunToCompletion}
+        disabled={loading}
+        title="Run to completion"
+        className="run-to-completion-btn"
+      >
+        &#x23ED; Run
       </button>
 
       <div className="timeline">
         <span className="timeline-label">
-          {loading ? '⏳ Loading...' : currentLine !== null ? `📍 Line ${currentLine + 1}` : '⏸ Not paused'}
+          {loading ? 'Loading...' : currentLine !== null ? `Line ${currentLine + 1}` : 'Not paused'}
         </span>
         <input
           type="range"

@@ -88,6 +88,16 @@ export function SourcePanel({ code, currentLine, breakpoints, hitCounts, onToggl
     setHover(null);
   }, []);
 
+  // Listen for Escape key to clear hover tooltip
+  useEffect(() => {
+    function onClearHover() {
+      clearTimeout(hoverTimeout.current);
+      setHover(null);
+    }
+    document.addEventListener('openreplay-clear-hover', onClearHover);
+    return () => document.removeEventListener('openreplay-clear-hover', onClearHover);
+  }, []);
+
   if (lines.length === 0) {
     return (
       <div className="source-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>

@@ -20,6 +20,7 @@ export type ConsoleMessage = {
   level: string;
   text: string;
   timestamp?: number;
+  line?: number;
 };
 
 export type RecordingInfo = {
@@ -117,6 +118,16 @@ export class ReplayClient {
     return r?.messages || [];
   }
 
+  async getSourceMap(sourceUrl: string): Promise<any> {
+    const r = await this.send('Recording.getSourceMap', { sourceUrl });
+    return r?.sourceMap || null;
+  }
+
+  async getOriginalSource(sourceMapUrl: string, originalSource: string): Promise<string> {
+    const r = await this.send('Recording.getOriginalSource', { sourceMapUrl, originalSource });
+    return r?.contents || '';
+  }
+
   async collectHitCounts(file: string): Promise<Record<number, number>> {
     // This spawns a replay process with profiler — can take 15+ seconds
     const r = await this.sendWithTimeout('Recording.collectHitCounts', { file }, 60000);
@@ -148,6 +159,27 @@ export class ReplayClient {
 
   async run(): Promise<{ exitCode: number; stdout: string; messages: ConsoleMessage[] }> {
     return this.send('Recording.run');
+  }
+
+  async runToCompletion(): Promise<{ exitCode: number }> {
+    return this.sendWithTimeout('Recording.runToCompletion', {}, 60000);
+  }
+
+  async stepOver(): Promise<any> {
+    return this.send('Debugger.stepOver');
+  }
+
+  async stepInto(): Promise<any> {
+    return this.send('Debugger.stepInto');
+  }
+
+  async setBreakpoint(sourceId: string, line: number): Promise<{ breakpointId: string }> {
+    return this.send('Debugger.setBreakpoint', { location: { sourceId, line } });
+  }
+
+  async getObjectPreview(objectId: string): Promise<Array<{ name: string; value: unknown; type: string; objectId?: string }>> {
+    const r = await this.send('Pause.getObjectPreview', { objectId });
+    return r?.properties || [];
   }
 
   disconnect() {
