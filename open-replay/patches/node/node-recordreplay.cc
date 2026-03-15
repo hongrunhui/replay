@@ -29,6 +29,9 @@ typedef uint64_t* (*TargetProgressFn)();
 typedef void (*NewCheckpointFn)();
 typedef void (*PassThroughFn)();
 typedef int (*ArePassedThroughFn)();
+typedef void (*OnInstrumentationFn)(int, int);
+typedef void (*BeginTraceFn)();
+typedef const int32_t* (*EndTraceFn)(uint32_t*);
 
 static AttachFn fn_attach = nullptr;
 static FinishRecordingFn fn_finish = nullptr;

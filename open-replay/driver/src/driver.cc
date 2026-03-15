@@ -445,6 +445,42 @@ static void cleanup_fork_checkpoints() {
   g_fork_checkpoint_count = 0;
 }
 
+/*
+ * 【执行轨迹收集】
+ * 当 g_collecting_trace 为 true 时，每次 V8 的 Instrumentation 字节码触发，
+ * driver 将 (function_id, offset) 对存入 g_trace_buffer。
+ * 执行结束后，server 可以将 offset 映射到行号得到 hit counts。
+ * 这是 Replay.io 的 Debugger.getHitCounts 的自研替代方案。
+ */
+static bool g_collecting_trace = false;
+static std::vector<int32_t> g_trace_buffer;  // pairs: [func_id, offset, func_id, offset, ...]
+static pthread_mutex_t g_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
+
+void RecordReplayBeginCollectingTrace() {
+  pthread_mutex_lock(&g_trace_mutex);
+  g_collecting_trace = true;
+  g_trace_buffer.clear();
+  g_trace_buffer.reserve(100000);  // pre-allocate for performance
+  pthread_mutex_unlock(&g_trace_mutex);
+}
+
+const int32_t* RecordReplayEndCollectingTrace(uint32_t* count) {
+  pthread_mutex_lock(&g_trace_mutex);
+  g_collecting_trace = false;
+  if (count) *count = static_cast<uint32_t>(g_trace_buffer.size() / 2);
+  const int32_t* ptr = g_trace_buffer.empty() ? nullptr : g_trace_buffer.data();
+  pthread_mutex_unlock(&g_trace_mutex);
+  return ptr;
+}
+
+void RecordReplayOnInstrumentation(int function_id, int offset) {
+  if (!g_collecting_trace) return;
+  pthread_mutex_lock(&g_trace_mutex);
+  g_trace_buffer.push_back(static_cast<int32_t>(function_id));
+  g_trace_buffer.push_back(static_cast<int32_t>(offset));
+  pthread_mutex_unlock(&g_trace_mutex);
+}
+
 void RecordReplayBeginPassThroughEvents() {
   g_passthrough_depth++;
 }

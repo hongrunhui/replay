@@ -106,6 +106,19 @@ void RecordReplaySetMetadata(const char* json);
 // Get the metadata JSON string from the recording (replay mode only).
 const char* RecordReplayGetMetadata();
 
+// --- Execution Trace (hit count collection via V8 instrumentation) ---
+
+// Start collecting execution trace (function_id + offset at each instrumentation point)
+void RecordReplayBeginCollectingTrace();
+
+// Stop collecting and return trace data.
+// Returns pointer to internal buffer: pairs of (function_id: int32, offset: int32)
+// count is set to the number of pairs.
+const int32_t* RecordReplayEndCollectingTrace(uint32_t* count);
+
+// Record one instrumentation hit (called from V8 bytecode handler)
+void RecordReplayOnInstrumentation(int function_id, int offset);
+
 // --- Event PassThrough (for inspector I/O bypass) ---
 
 // Begin passthrough mode — all syscalls go directly to OS, not recorded/replayed.
