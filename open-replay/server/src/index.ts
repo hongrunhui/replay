@@ -64,8 +64,14 @@ export async function startServer(options: ServerOptions) {
     res.end(readFileSync(fullPath));
   });
 
-  // WebSocket server attached to HTTP server
-  const wss = new WebSocketServer({ server: httpServer });
+  // WebSocket server with manual upgrade handling
+  const wss = new WebSocketServer({ noServer: true });
+
+  httpServer.on('upgrade', (request, socket, head) => {
+    wss.handleUpgrade(request, socket, head, (ws) => {
+      wss.emit('connection', ws, request);
+    });
+  });
 
   wss.on('connection', (ws: WebSocket) => {
     console.log('[server] Client connected');
@@ -104,13 +110,15 @@ export async function startServer(options: ServerOptions) {
   return httpServer;
 }
 
-// CLI entry point
-if (process.argv[1]?.endsWith('index.ts') || process.argv[1]?.endsWith('index.js')) {
+// CLI entry point — only runs when this file is the main entry
+// Check via require.main === module (CommonJS) to detect direct execution
+const isDirectRun = typeof require !== 'undefined' && require.main === module;
+if (isDirectRun) {
   const recording = process.argv[2];
   const port = parseInt(process.argv[3] || '1234', 10);
 
   if (!recording) {
-    console.error('Usage: tsx src/index.ts <recording-path> [port]');
+    console.error('Usage: node dist/index.js <recording-path> [port]');
     process.exit(1);
   }
 

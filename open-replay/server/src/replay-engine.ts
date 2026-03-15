@@ -31,7 +31,7 @@
 
 import { ChildProcess, spawn } from 'node:child_process';
 import { EventEmitter } from 'node:events';
-import { resolve, join } from 'node:path';
+import { resolve, join, basename } from 'node:path';
 import { readFileSync, existsSync } from 'node:fs';
 import { homedir } from 'node:os';
 import http from 'node:http';
@@ -47,6 +47,7 @@ interface ReplayEngineOptions {
 export interface PauseState {
   frames: FrameInfo[];
   stdout: string;  // console output captured up to this pause point
+  consoleMessages?: Array<{ level: string; text: string; line?: number }>;  // CDP console messages
 }
 
 export interface FrameInfo {
@@ -376,139 +377,138 @@ export class ReplayEngine extends EventEmitter {
   }
 
   /*
-   * 收集每行代码的执行次数。
-   * 原理：启动一个新的 replay 进程，开启 V8 Profiler 的精确覆盖率，
-   * 运行到结束，然后读取 coverage 数据转换为 line → hitCount 映射。
+   * 收集每行代码的执行次数 — Replay.io 方案。
+   *
+   * 原理：V8 字节码生成器在每个语句位置插入 Instrumentation 字节码。
+   * 执行时 V8 runtime 计算 (script_id, line) 传给驱动，驱动直接聚合。
+   * 进程退出后驱动把命中计数写入 JSON 文件，server 读取。
+   *
+   * 与旧 Profiler Coverage 方案相比：
+   * - 不需要单独进程的 CDP 连接
+   * - 回放到哪就收集到哪（和 runToLine 共用进程）
+   * - 精确到语句级别
    */
   async collectHitCounts(targetFile: string): Promise<Record<number, number>> {
-    // Start a fresh replay process (no --inspect-brk, just run to completion)
     const { nodePath, env, scriptPath } = this.buildSpawnConfig();
     if (!scriptPath) return {};
 
     const header = parseRecordingHeader(this.opts.recordingPath);
+    const traceFile = join(homedir(), '.openreplay', `trace-${Date.now()}.json`);
 
-    // Use --inspect-brk so we can start profiler BEFORE script runs
-    const port = 9200 + Math.floor(Math.random() * 800);
-    const nodeArgs: string[] = [`--inspect-brk=${port}`];
+    // Enable V8 instrumentation + trace output via env vars
+    const instrEnv: NodeJS.ProcessEnv = {
+      ...env,
+      OPENREPLAY_INSTRUMENT: '1',
+      OPENREPLAY_TRACE_OUTPUT: traceFile,
+    };
+
+    const nodeArgs: string[] = [];
     if (header.randomSeed) nodeArgs.push(`--random-seed=${header.randomSeed}`);
     nodeArgs.push(scriptPath);
 
-    const child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+    // Run replay to completion with instrumentation enabled
+    const child = spawn(nodePath, nodeArgs, { env: instrEnv, stdio: ['pipe', 'pipe', 'pipe'] });
+    child.stderr?.on('data', (d: Buffer) => {
+      const msg = d.toString();
+      if (msg.includes('[openreplay]')) process.stderr.write(`[hitcount] ${msg}`);
+    });
 
-    // Wait for inspector
+    let exited = false;
     await new Promise<void>((resolve) => {
-      child.stderr?.on('data', (d: Buffer) => {
-        if (d.toString().includes('Debugger listening')) resolve();
-      });
-      setTimeout(resolve, 8000);
+      child.on('exit', (code) => { exited = true; resolve(); });
+      setTimeout(() => { if (!exited) { child.kill(); resolve(); } }, 120000);
     });
 
-    // Use a completely independent WebSocket connection (don't touch this.ws)
-    const wsUrl = await new Promise<string>((resolve, reject) => {
-      const req = http.get(`http://127.0.0.1:${port}/json`, (res) => {
-        let body = '';
-        res.on('data', (d: Buffer) => { body += d.toString(); });
-        res.on('end', () => {
-          try {
-            const url = JSON.parse(body)[0]?.webSocketDebuggerUrl;
-            url ? resolve(url) : reject(new Error('No WS URL'));
-          } catch (e) { reject(e); }
-        });
-      });
-      req.on('error', reject);
-      setTimeout(() => reject(new Error('timeout')), 8000);
-    }).catch(() => '');
+    // Give driver time to flush trace file (ShutdownDriver writes on exit)
+    if (exited) await new Promise(r => setTimeout(r, 200));
 
-    if (!wsUrl) { child.kill(); return {}; }
-
-    // Independent CDP connection for coverage collection
-    const tmpWs = new WebSocket(wsUrl);
-    let tmpId = 1;
-    const tmpPending = new Map<number, { resolve: (v: any) => void }>();
-
-    await new Promise<void>((resolve, reject) => {
-      tmpWs.once('open', resolve);
-      tmpWs.once('error', reject);
-      setTimeout(reject, 5000);
-    }).catch(() => { child.kill(); return {}; });
-
-    tmpWs.on('message', (data: Buffer) => {
-      const msg = JSON.parse(data.toString());
-      if (msg.id !== undefined) {
-        const p = tmpPending.get(msg.id);
-        if (p) { tmpPending.delete(msg.id); p.resolve(msg.result); }
-      }
-      // Auto-resume any pause (Break on start)
-      if (msg.method === 'Debugger.paused') {
-        tmpWs.send(JSON.stringify({ id: tmpId++, method: 'Debugger.resume', params: {} }));
-      }
-    });
-
-    const tmpSend = (method: string, params: Record<string, unknown> = {}): Promise<any> => {
-      const id = tmpId++;
-      return new Promise((resolve) => {
-        tmpPending.set(id, { resolve });
-        tmpWs.send(JSON.stringify({ id, method, params }));
-        setTimeout(() => { tmpPending.delete(id); resolve(null); }, 15000);
-      });
-    };
-
+    // Read trace file written by driver
+    const counts: Record<number, number> = {};
     try {
-      // Start profiler BEFORE script runs
-      await tmpSend('Profiler.enable');
-      await tmpSend('Profiler.startPreciseCoverage', { callCount: true, detailed: true });
-      await tmpSend('Runtime.enable');
-      await tmpSend('Debugger.enable');
-      await tmpSend('Runtime.runIfWaitingForDebugger');
+      const { readFileSync, unlinkSync } = await import('node:fs');
+      const json = readFileSync(traceFile, 'utf8');
+      const data = JSON.parse(json) as Record<string, Record<string, number>>;
 
-      // Wait for script to finish
-      await new Promise<void>((resolve) => {
-        child.on('exit', () => resolve());
-        setTimeout(resolve, 15000);
-      });
+      // The trace contains ALL scripts (Node.js internals + user code).
+      // We need to find the user script's script_id.
+      // Strategy: read the source file to get its line count, then find the
+      // script_id whose max line number matches (user scripts are small,
+      // Node.js internals have thousands of lines).
+      let sourceLineCount = 0;
+      try {
+        const source = readFileSync(targetFile, 'utf8');
+        sourceLineCount = source.split('\n').length;
+      } catch {}
 
-      // Collect coverage
-      const coverage = await tmpSend('Profiler.takePreciseCoverage');
-      const scripts = coverage?.result || [];
+      // Find the best matching script_id:
+      // Trace keys are now source_positions (character offsets), not line numbers.
+      // User script: max source_position must be < source text length.
+      let sourceLength = 0;
+      try { sourceLength = readFileSync(targetFile, 'utf8').length; } catch {}
 
-      const counts: Record<number, number> = {};
-      const filename = targetFile.split('/').pop() || targetFile;
+      let bestScriptId: string | null = null;
+      let bestLocationCount = 0;
 
-      for (const script of scripts) {
-        if (!script.url?.includes(filename)) continue;
+      for (const [scriptId, posCounts] of Object.entries(data)) {
+        const positions = Object.keys(posCounts).map(Number);
+        if (positions.length === 0) continue;
+        const maxPos = Math.max(...positions);
 
-        // Get source to map byte offsets to lines
-        const src = await tmpSend('Debugger.getScriptSource', { scriptId: script.scriptId });
-        const source: string = src?.scriptSource || '';
-        if (!source) continue;
-
-        const lineOffsets = [0];
-        for (let i = 0; i < source.length; i++) {
-          if (source[i] === '\n') lineOffsets.push(i + 1);
-        }
-        const offsetToLine = (offset: number) => {
-          for (let i = lineOffsets.length - 1; i >= 0; i--) {
-            if (lineOffsets[i] <= offset) return i;
+        // User script: max source_position within source file length
+        if (sourceLength > 0 && maxPos < sourceLength) {
+          if (positions.length > bestLocationCount) {
+            bestLocationCount = positions.length;
+            bestScriptId = scriptId;
           }
-          return 0;
+        }
+      }
+
+      // Extract hit counts: trace stores {source_position: count}.
+      // Map source_position → line using source text.
+      // Same line with multiple positions → take MAX (not sum).
+      // This matches Replay.io: `for(init;cond;update)` shows 1x, not 12x.
+      if (bestScriptId && data[bestScriptId]) {
+        let source = '';
+        try { source = readFileSync(targetFile, 'utf8'); } catch {}
+        const lineStarts = [0];
+        for (let i = 0; i < source.length; i++) {
+          if (source[i] === '\n') lineStarts.push(i + 1);
+        }
+        const posToLine = (pos: number): number => {
+          let lo = 0, hi = lineStarts.length - 1;
+          while (lo < hi) {
+            const mid = (lo + hi + 1) >> 1;
+            if (lineStarts[mid] <= pos) lo = mid; else hi = mid - 1;
+          }
+          return lo;
         };
 
-        for (const func of script.functions) {
-          for (const range of func.ranges) {
-            if (range.count === 0) continue;
-            const s = offsetToLine(range.startOffset);
-            const e = offsetToLine(range.endOffset);
-            for (let line = s; line <= e; line++) {
-              counts[line] = Math.max(counts[line] || 0, range.count);
-            }
+        // Group by line, take count of FIRST source_position per line.
+        // for(init;cond;update) → use init's count (1x), not cond's (6x).
+        const lineFirstPos: Record<number, { pos: number; count: number }> = {};
+        for (const [posStr, count] of Object.entries(data[bestScriptId])) {
+          const pos = parseInt(posStr, 10);
+          if (isNaN(pos) || pos < 0) continue;
+          const lineNum = posToLine(pos);
+          if (!(lineNum in lineFirstPos) || pos < lineFirstPos[lineNum].pos) {
+            lineFirstPos[lineNum] = { pos, count: count as number };
           }
         }
+        for (const [line, { count }] of Object.entries(lineFirstPos)) {
+          counts[parseInt(line, 10)] = count;
+        }
+        console.log(`[engine] Hit counts: script ${bestScriptId}, ${Object.keys(counts).length} lines`);
+      } else {
+        console.log(`[engine] No matching script found for ${targetFile} (${sourceLineCount} lines)`);
       }
-      return counts;
-    } finally {
-      tmpWs.close();
-      child.kill();
+
+      // Clean up trace file
+      try { unlinkSync(traceFile); } catch {}
+    } catch (e: any) {
+      console.error('[engine] Failed to read trace file:', e.message);
     }
+
+    return counts;
   }
 
   async runToCompletion(): Promise<number> {
@@ -643,6 +643,18 @@ export class ReplayEngine extends EventEmitter {
     }));
 
     let pauseReason = '';
+    // Collect console messages via CDP (more reliable than stdout buffering)
+    const consoleMessages: Array<{ level: string; text: string; line?: number }> = [];
+    this.onCDPEvent('Runtime.consoleAPICalled', (p: any) => {
+      const level = p?.type || 'log';
+      const args = p?.args || [];
+      const text = args.map((a: any) => a.value ?? a.description ?? '').join(' ');
+      const line = p?.stackTrace?.callFrames?.[0]?.lineNumber;
+      if (text) consoleMessages.push({ level, text, line });
+    });
+    // Console.messageAdded is a duplicate of Runtime.consoleAPICalled — skip it
+    // to avoid double-counting messages.
+
     this.onCDPEvent('Debugger.paused', (p: any) => {
       pauseReason = p?.reason || '';
       this.currentPause = { frames: mapFrames(p?.callFrames || []), stdout: '' };
@@ -654,6 +666,7 @@ export class ReplayEngine extends EventEmitter {
 
     await this.sendCDP('Runtime.enable');
     await this.sendCDP('Debugger.enable');
+    await this.sendCDP('Console.enable');
     await this.sendCDP('Runtime.runIfWaitingForDebugger');
 
     // Step 1: Wait for "Break on start" pause
@@ -676,9 +689,23 @@ export class ReplayEngine extends EventEmitter {
 
     // Step 4: Wait for the REAL breakpoint hit (not "Break on start")
     return new Promise<PauseState | null>((resolve) => {
-      const resolveWithStdout = (state: PauseState | null) => {
+      const resolveWithData = (state: PauseState | null) => {
         if (state) {
-          resolve({ ...state, stdout: this.capturedStdout });
+          // Delay to allow stdout flush + late-arriving CDP console events
+          setTimeout(() => {
+            // Merge CDP messages + stdout lines (prefer CDP if available)
+            const merged = [...consoleMessages];
+            if (merged.length === 0 && this.capturedStdout) {
+              // Fallback: parse stdout lines
+              for (const line of this.capturedStdout.split('\n')) {
+                const trimmed = line.trim();
+                if (trimmed && !trimmed.startsWith('[openreplay]')) {
+                  merged.push({ level: 'log', text: trimmed });
+                }
+              }
+            }
+            resolve({ ...state, stdout: this.capturedStdout, consoleMessages: merged });
+          }, 300);
         } else {
           resolve(null);
         }
@@ -691,11 +718,11 @@ export class ReplayEngine extends EventEmitter {
           return;
         }
         this.off('paused', onPause);
-        resolveWithStdout(this.currentPause);
+        resolveWithData(this.currentPause);
       };
       this.on('paused', onPause);
       if (this.currentPause && pauseReason !== 'Break on start') {
-        resolveWithStdout(this.currentPause);
+        resolveWithData(this.currentPause);
         return;
       }
       this.once('exit', () => { this.off('paused', onPause); resolve(null); });
