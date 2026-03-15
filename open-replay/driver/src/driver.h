@@ -116,8 +116,12 @@ void RecordReplayBeginCollectingTrace();
 // count is set to the number of pairs.
 const int32_t* RecordReplayEndCollectingTrace(uint32_t* count);
 
-// Record one instrumentation hit (called from V8 bytecode handler)
-void RecordReplayOnInstrumentation(int function_id, int offset);
+// Record one instrumentation hit. Now receives (script_id, line_number)
+// from V8 runtime after source position mapping. Driver aggregates directly.
+void RecordReplayOnInstrumentation(int script_id, int line);
+
+// Write aggregated hit counts to a JSON file for the server to read.
+void RecordReplayWriteHitCounts(const char* path);
 
 // --- Event PassThrough (for inspector I/O bypass) ---
 

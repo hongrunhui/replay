@@ -35,6 +35,8 @@
 #include <cstring>
 #include <cstdlib>
 #include <string>
+#include <map>
+#include <utility>
 #include <mutex>
 #include <pthread.h>
 
@@ -446,38 +448,80 @@ static void cleanup_fork_checkpoints() {
 }
 
 /*
- * 【执行轨迹收集】
- * 当 g_collecting_trace 为 true 时，每次 V8 的 Instrumentation 字节码触发，
- * driver 将 (function_id, offset) 对存入 g_trace_buffer。
- * 执行结束后，server 可以将 offset 映射到行号得到 hit counts。
- * 这是 Replay.io 的 Debugger.getHitCounts 的自研替代方案。
+ * 【执行轨迹收集 — Replay.io 方案】
+ * V8 字节码生成器在每个语句位置插入 Instrumentation 字节码。
+ * 执行时 V8 runtime 计算 (script_id, line_number) 传给这里。
+ * 驱动直接聚合为 hit count map: (script_id, line) → count。
+ * 进程退出时写入 JSON 文件，server 读取后返回给 DevTools。
+ *
+ * 与 Profiler Coverage 方案相比：
+ * - 不需要单独进程，回放过程中同步收集
+ * - 精确到语句级别（不是函数范围）
+ * - 回放到哪就收集到哪（零额外延迟）
  */
 static bool g_collecting_trace = false;
-static std::vector<int32_t> g_trace_buffer;  // pairs: [func_id, offset, func_id, offset, ...]
+static std::map<std::pair<int,int>, uint32_t> g_hit_counts;  // (script_id, line) → count
+static std::vector<int32_t> g_trace_buffer;  // legacy: raw pairs for EndCollectingTrace
 static pthread_mutex_t g_trace_mutex = PTHREAD_MUTEX_INITIALIZER;
 
 void RecordReplayBeginCollectingTrace() {
   pthread_mutex_lock(&g_trace_mutex);
   g_collecting_trace = true;
+  g_hit_counts.clear();
   g_trace_buffer.clear();
-  g_trace_buffer.reserve(100000);  // pre-allocate for performance
   pthread_mutex_unlock(&g_trace_mutex);
 }
 
 const int32_t* RecordReplayEndCollectingTrace(uint32_t* count) {
   pthread_mutex_lock(&g_trace_mutex);
   g_collecting_trace = false;
-  if (count) *count = static_cast<uint32_t>(g_trace_buffer.size() / 2);
+  // Convert aggregated hit counts to flat buffer for legacy API
+  g_trace_buffer.clear();
+  for (auto& [key, cnt] : g_hit_counts) {
+    g_trace_buffer.push_back(key.first);   // script_id
+    g_trace_buffer.push_back(key.second);  // line_number
+    g_trace_buffer.push_back(static_cast<int32_t>(cnt));
+  }
+  if (count) *count = static_cast<uint32_t>(g_hit_counts.size());
   const int32_t* ptr = g_trace_buffer.empty() ? nullptr : g_trace_buffer.data();
   pthread_mutex_unlock(&g_trace_mutex);
   return ptr;
 }
 
-void RecordReplayOnInstrumentation(int function_id, int offset) {
+// Called by V8 runtime with (script_id, line_number) — directly aggregates
+void RecordReplayOnInstrumentation(int script_id, int line) {
   if (!g_collecting_trace) return;
   pthread_mutex_lock(&g_trace_mutex);
-  g_trace_buffer.push_back(static_cast<int32_t>(function_id));
-  g_trace_buffer.push_back(static_cast<int32_t>(offset));
+  g_hit_counts[{script_id, line}]++;
+  pthread_mutex_unlock(&g_trace_mutex);
+}
+
+// Write aggregated hit counts to a JSON file for the server to read.
+// Format: {"<script_id>": {"<line>": count, ...}, ...}
+void RecordReplayWriteHitCounts(const char* path) {
+  pthread_mutex_lock(&g_trace_mutex);
+
+  FILE* f = fopen(path, "w");
+  if (!f) { pthread_mutex_unlock(&g_trace_mutex); return; }
+
+  fprintf(f, "{");
+  int prev_script = -1;
+  bool first_script = true;
+  for (auto& [key, cnt] : g_hit_counts) {
+    if (key.first != prev_script) {
+      if (prev_script >= 0) fprintf(f, "},");
+      if (!first_script) {} else first_script = false;
+      fprintf(f, "\"%d\":{", key.first);
+      prev_script = key.first;
+      fprintf(f, "\"%d\":%u", key.second, cnt);
+    } else {
+      fprintf(f, ",\"%d\":%u", key.second, cnt);
+    }
+  }
+  if (prev_script >= 0) fprintf(f, "}");
+  fprintf(f, "}");
+  fclose(f);
+
   pthread_mutex_unlock(&g_trace_mutex);
 }
 
