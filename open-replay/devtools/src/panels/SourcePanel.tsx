@@ -13,26 +13,69 @@ type Props = {
 };
 
 // Simple JS syntax highlighting
-function highlightLine(text: string): JSX.Element[] {
+function highlightLine(text: string, searchTerm?: string): JSX.Element[] {
   const parts: JSX.Element[] = [];
   const regex = /(\/\/.*$|'[^']*'|"[^"]*"|`[^`]*`|\b(const|let|var|function|return|if|else|for|while|new|try|catch|throw|typeof|import|export|from|async|await|class|extends|true|false|null|undefined|console|require|Math|Date|JSON|process|setTimeout|Promise|Array|Object|Error|crypto|fs|path|http)\b|\b\d+\.?\d*\b)/g;
   let lastIndex = 0;
   let match;
+  // First, collect syntax tokens
+  const tokens: Array<{ start: number; end: number; cls: string }> = [];
   while ((match = regex.exec(text)) !== null) {
-    if (match.index > lastIndex)
-      parts.push(<span key={`t${lastIndex}`}>{text.slice(lastIndex, match.index)}</span>);
     const val = match[0];
     let cls = '';
     if (val.startsWith('//')) cls = 'hl-comment';
     else if (val.startsWith("'") || val.startsWith('"') || val.startsWith('`')) cls = 'hl-string';
     else if (/^\d/.test(val)) cls = 'hl-number';
     else cls = 'hl-keyword';
-    parts.push(<span key={`h${match.index}`} className={cls}>{val}</span>);
-    lastIndex = match.index + val.length;
+    tokens.push({ start: match.index, end: match.index + val.length, cls });
   }
-  if (lastIndex < text.length)
-    parts.push(<span key={`e${lastIndex}`}>{text.slice(lastIndex)}</span>);
-  return parts.length ? parts : [<span key="empty">{text || ' '}</span>];
+
+  // Build elements with optional search highlights
+  let pos = 0;
+  const addSegment = (segment: string, cls: string, keyPrefix: string, startPos: number) => {
+    if (!searchTerm || searchTerm.length === 0) {
+      parts.push(<span key={`${keyPrefix}${startPos}`} className={cls}>{segment}</span>);
+      return;
+    }
+    // Split segment by search matches
+    const lowerSeg = segment.toLowerCase();
+    const lowerSearch = searchTerm.toLowerCase();
+    let segPos = 0;
+    let searchIdx = lowerSeg.indexOf(lowerSearch, segPos);
+    let partIdx = 0;
+    while (searchIdx !== -1) {
+      if (searchIdx > segPos) {
+        parts.push(<span key={`${keyPrefix}${startPos}-${partIdx}a`} className={cls}>{segment.slice(segPos, searchIdx)}</span>);
+        partIdx++;
+      }
+      parts.push(
+        <span key={`${keyPrefix}${startPos}-${partIdx}h`} className={`${cls} search-highlight`}>
+          {segment.slice(searchIdx, searchIdx + searchTerm.length)}
+        </span>
+      );
+      partIdx++;
+      segPos = searchIdx + searchTerm.length;
+      searchIdx = lowerSeg.indexOf(lowerSearch, segPos);
+    }
+    if (segPos < segment.length) {
+      parts.push(<span key={`${keyPrefix}${startPos}-${partIdx}e`} className={cls}>{segment.slice(segPos)}</span>);
+    }
+  };
+
+  for (const token of tokens) {
+    if (token.start > pos) {
+      addSegment(text.slice(pos, token.start), '', 't', pos);
+    }
+    addSegment(text.slice(token.start, token.end), token.cls, 'h', token.start);
+    pos = token.end;
+  }
+  if (pos < text.length) {
+    addSegment(text.slice(pos), '', 'e', pos);
+  }
+  if (parts.length === 0) {
+    addSegment(text || ' ', '', 'empty', 0);
+  }
+  return parts;
 }
 
 // Extract word under mouse from code text
@@ -48,6 +91,78 @@ export function SourcePanel({ code, currentLine, breakpoints, hitCounts, onToggl
   const [hover, setHover] = useState<{ x: number; y: number; text: string; value: string } | null>(null);
   const hoverTimeout = useRef<ReturnType<typeof setTimeout>>();
   const lines = code ? code.split('\n') : [];
+
+  // Search state
+  const [searchOpen, setSearchOpen] = useState(false);
+  const [searchTerm, setSearchTerm] = useState('');
+  const [searchMatches, setSearchMatches] = useState<Array<{ line: number; col: number }>>([]);
+  const [currentMatch, setCurrentMatch] = useState(0);
+  const searchInputRef = useRef<HTMLInputElement>(null);
+
+  // Compute search matches when searchTerm changes
+  useEffect(() => {
+    if (!searchTerm || searchTerm.length === 0) {
+      setSearchMatches([]);
+      setCurrentMatch(0);
+      return;
+    }
+    const lowerSearch = searchTerm.toLowerCase();
+    const matches: Array<{ line: number; col: number }> = [];
+    for (let i = 0; i < lines.length; i++) {
+      const lowerLine = lines[i].toLowerCase();
+      let col = lowerLine.indexOf(lowerSearch);
+      while (col !== -1) {
+        matches.push({ line: i, col });
+        col = lowerLine.indexOf(lowerSearch, col + 1);
+      }
+    }
+    setSearchMatches(matches);
+    setCurrentMatch(matches.length > 0 ? 0 : -1);
+  }, [searchTerm, code]);
+
+  // Scroll to current match
+  useEffect(() => {
+    if (currentMatch >= 0 && currentMatch < searchMatches.length && scrollRef.current) {
+      const matchLine = searchMatches[currentMatch].line;
+      const lineEl = scrollRef.current.querySelector(`[data-line="${matchLine}"]`) as HTMLElement;
+      lineEl?.scrollIntoView({ block: 'center', behavior: 'smooth' });
+    }
+  }, [currentMatch, searchMatches]);
+
+  const openSearch = useCallback(() => {
+    setSearchOpen(true);
+    setTimeout(() => searchInputRef.current?.focus(), 50);
+  }, []);
+
+  const closeSearch = useCallback(() => {
+    setSearchOpen(false);
+    setSearchTerm('');
+    setSearchMatches([]);
+    setCurrentMatch(0);
+  }, []);
+
+  const goToNextMatch = useCallback(() => {
+    if (searchMatches.length === 0) return;
+    setCurrentMatch(prev => (prev + 1) % searchMatches.length);
+  }, [searchMatches]);
+
+  const goToPrevMatch = useCallback(() => {
+    if (searchMatches.length === 0) return;
+    setCurrentMatch(prev => (prev - 1 + searchMatches.length) % searchMatches.length);
+  }, [searchMatches]);
+
+  // Keyboard: Ctrl+F to open, Escape to close
+  useEffect(() => {
+    function handleKeyDown(e: KeyboardEvent) {
+      if ((e.ctrlKey || e.metaKey) && e.key === 'f') {
+        e.preventDefault();
+        openSearch();
+        return;
+      }
+    }
+    window.addEventListener('keydown', handleKeyDown);
+    return () => window.removeEventListener('keydown', handleKeyDown);
+  }, [openSearch]);
 
   useEffect(() => {
     if (currentLine !== null && scrollRef.current) {
@@ -98,16 +213,23 @@ export function SourcePanel({ code, currentLine, breakpoints, hitCounts, onToggl
     return () => document.removeEventListener('openreplay-clear-hover', onClearHover);
   }, []);
 
+  // Which lines have the current search match highlighted
+  const currentMatchLine = currentMatch >= 0 && currentMatch < searchMatches.length
+    ? searchMatches[currentMatch].line
+    : -1;
+
   if (lines.length === 0) {
     return (
       <div className="source-panel" style={{ display: 'flex', alignItems: 'center', justifyContent: 'center' }}>
         <div style={{ color: '#888', lineHeight: 2, textAlign: 'center' }}>
-          <div style={{ fontSize: 32, marginBottom: 16 }}>🔍</div>
+          <div style={{ fontSize: 32, marginBottom: 16 }}>&#x1F50D;</div>
           <div style={{ color: '#569cd6', fontSize: 16, marginBottom: 12 }}>How to use</div>
           <div>1. Click any <b>line number</b> to time-travel</div>
-          <div>2. Use ◀ ▶ to step backward / forward</div>
+          <div>2. Use &#x25C0; &#x25B6; to step backward / forward</div>
           <div>3. <b>Hover</b> on a variable to preview its value</div>
           <div>4. Evaluate expressions in the Variables panel</div>
+          <div>5. Press <b>Ctrl+F</b> to search in source</div>
+          <div>6. Press <b>?</b> for keyboard shortcuts</div>
         </div>
       </div>
     );
@@ -115,6 +237,38 @@ export function SourcePanel({ code, currentLine, breakpoints, hitCounts, onToggl
 
   return (
     <div className="source-panel" ref={scrollRef} onMouseLeave={handleMouseLeave}>
+      {/* Search bar */}
+      {searchOpen && (
+        <div className="search-bar">
+          <input
+            ref={searchInputRef}
+            className="search-input"
+            value={searchTerm}
+            onChange={e => setSearchTerm(e.target.value)}
+            placeholder="Search..."
+            onKeyDown={e => {
+              if (e.key === 'Escape') {
+                closeSearch();
+              } else if (e.key === 'Enter' && e.shiftKey) {
+                e.preventDefault();
+                goToPrevMatch();
+              } else if (e.key === 'Enter') {
+                e.preventDefault();
+                goToNextMatch();
+              }
+            }}
+          />
+          <span className="search-count">
+            {searchMatches.length > 0
+              ? `${currentMatch + 1} of ${searchMatches.length}`
+              : searchTerm ? 'No matches' : ''}
+          </span>
+          <button className="search-nav-btn" onClick={goToPrevMatch} disabled={searchMatches.length === 0} title="Previous (Shift+Enter)">&#x25B2;</button>
+          <button className="search-nav-btn" onClick={goToNextMatch} disabled={searchMatches.length === 0} title="Next (Enter)">&#x25BC;</button>
+          <button className="search-close-btn" onClick={closeSearch} title="Close (Escape)">&#x2715;</button>
+        </div>
+      )}
+
       {/* Hover tooltip */}
       {hover && (
         <div className="hover-tooltip" style={{ left: hover.x, top: hover.y }}>
@@ -128,7 +282,7 @@ export function SourcePanel({ code, currentLine, breakpoints, hitCounts, onToggl
         <div
           key={i}
           data-line={i}
-          className={`source-line ${i === currentLine ? 'current' : ''} ${breakpoints.has(i) ? 'breakpoint' : ''}`}
+          className={`source-line ${i === currentLine ? 'current' : ''} ${breakpoints.has(i) ? 'breakpoint' : ''} ${i === currentMatchLine ? 'search-current-line' : ''}`}
           onClick={() => onClickLine(i)}
         >
           <div className="line-gutter">
@@ -138,7 +292,7 @@ export function SourcePanel({ code, currentLine, breakpoints, hitCounts, onToggl
               <span className="hit-count-empty"></span>
             )}
             {breakpoints.has(i)
-              ? <span className="bp-icon" onClick={(e) => { e.stopPropagation(); onToggleBreakpoint(i); }}>●</span>
+              ? <span className="bp-icon" onClick={(e) => { e.stopPropagation(); onToggleBreakpoint(i); }}>&#x25CF;</span>
               : <span className="bp-icon-empty"></span>}
             <span className="line-num">{i + 1}</span>
           </div>
@@ -146,7 +300,7 @@ export function SourcePanel({ code, currentLine, breakpoints, hitCounts, onToggl
             className="line-content"
             onMouseMove={(e) => handleMouseOver(e, line)}
           >
-            {highlightLine(line)}
+            {highlightLine(line, searchOpen ? searchTerm : undefined)}
           </div>
         </div>
       ))}

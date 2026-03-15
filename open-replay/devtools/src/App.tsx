@@ -8,6 +8,8 @@ import { CallStackPanel } from './panels/CallStackPanel';
 import { ConsolePanel } from './panels/ConsolePanel';
 import { ConnectPanel } from './panels/ConnectPanel';
 import { RecordingInfoBar } from './panels/RecordingInfoBar';
+import { WatchPanel } from './panels/WatchPanel';
+import { KeyboardShortcuts } from './panels/KeyboardShortcuts';
 import { parseSourceMap, mapHitCountsToOriginal, SourceMapData, OriginalPosition } from './sourcemap';
 import './styles.css';
 
@@ -430,6 +432,7 @@ export function App() {
       <div className="toolbar">
         <span className="logo">Open Replay DevTools</span>
         <span className="status">{state.status}</span>
+        <KeyboardShortcuts />
       </div>
 
       {!state.connected ? (
@@ -510,6 +513,10 @@ export function App() {
                 variables={state.variables}
                 evaluate={evaluate}
                 frameId={state.frames[0]?.frameId}
+              />
+              <WatchPanel
+                evaluate={evaluate}
+                paused={state.frames.length > 0}
               />
               <ConsolePanel messages={state.consoleMessages} onJumpToLine={jumpToLine} />
             </div>
