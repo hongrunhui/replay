@@ -58,8 +58,77 @@ else:
     print('  WARNING: IncBlockCounter not found')
 "
 
+# --- 2b. Patch bytecode-array-builder (add RecordReplayIncProgressCounter) ---
+echo "[5b/10] Patching bytecode-array-builder..."
+BAB_H="$V8/src/interpreter/bytecode-array-builder.h"
+python3 -c "
+with open('$BAB_H') as f: s = f.read()
+if 'RecordReplayIncProgressCounter' in s:
+    print('  Already patched')
+else:
+    marker = 'BytecodeArrayBuilder& IncBlockCounter(int slot);'
+    idx = s.find(marker)
+    if idx >= 0:
+        eol = s.find('\n', idx)
+        insert = '''
+
+  // Open Replay: increment execution progress counter.
+  BytecodeArrayBuilder& RecordReplayIncProgressCounter();'''
+        s = s[:eol] + insert + s[eol:]
+        with open('$BAB_H', 'w') as f: f.write(s)
+        print('  OK')
+    else:
+        print('  WARNING: IncBlockCounter not found in header')
+"
+
+BAB_CC="$V8/src/interpreter/bytecode-array-builder.cc"
+python3 -c "
+with open('$BAB_CC') as f: s = f.read()
+if 'RecordReplayIncProgressCounter' in s:
+    print('  Implementation already patched')
+else:
+    marker = 'OutputIncBlockCounter(coverage_array_slot);'
+    idx = s.find(marker)
+    if idx >= 0:
+        # Find end of IncBlockCounter function
+        brace = s.find('}', idx)
+        insert = '''
+
+BytecodeArrayBuilder& BytecodeArrayBuilder::RecordReplayIncProgressCounter() {
+  OutputRecordReplayIncExecutionProgressCounter();
+  return *this;
+}'''
+        s = s[:brace+1] + insert + s[brace+1:]
+        with open('$BAB_CC', 'w') as f: f.write(s)
+        print('  Implementation OK')
+    else:
+        print('  WARNING: OutputIncBlockCounter not found')
+"
+
+# --- 2c. Patch bytecode-generator.cc (add progress counter at function entry) ---
+echo "[5c/10] Patching bytecode-generator.cc..."
+BG="$V8/src/interpreter/bytecode-generator.cc"
+python3 -c "
+with open('$BG') as f: s = f.read()
+if 'RecordReplayIncProgressCounter' in s:
+    print('  Already patched')
+else:
+    marker = '// Visit statements in the function body.'
+    idx = s.find(marker)
+    if idx >= 0:
+        insert = '''  // Open Replay: increment execution progress counter at function entry
+  builder()->RecordReplayIncProgressCounter();
+
+'''
+        s = s[:idx] + insert + s[idx:]
+        with open('$BG', 'w') as f: f.write(s)
+        print('  OK')
+    else:
+        print('  WARNING: VisitStatements marker not found')
+"
+
 # --- 3. Patch runtime.h ---
-echo "[6/8] Patching runtime.h..."
+echo "[6/10] Patching runtime.h...
 RUNTIME_H="$V8/src/runtime/runtime.h"
 python3 -c "
 with open('$RUNTIME_H') as f: s = f.read()
@@ -84,10 +153,15 @@ else:
 "
 
 # --- 4. Patch interpreter-generator.cc ---
+# Insert IGNITION_HANDLERs BEFORE #undef IGNITION_HANDLER (must be inside the anonymous namespace)
 echo "[7/8] Patching interpreter-generator.cc..."
 INTERP_GEN="$V8/src/interpreter/interpreter-generator.cc"
-cat >> "$INTERP_GEN" << 'ENDPATCH'
-
+python3 -c "
+with open('$INTERP_GEN') as f: s = f.read()
+if 'RecordReplayIncExecutionProgressCounter' in s:
+    print('  Already patched')
+else:
+    insert = '''
 // --- Open Replay: Record/Replay bytecode handlers ---
 
 IGNITION_HANDLER(RecordReplayIncExecutionProgressCounter, InterpreterAssembler) {
@@ -125,47 +199,78 @@ IGNITION_HANDLER(RecordReplayAssertValue, InterpreterAssembler) {
   SetAccumulator(result);
   Dispatch();
 }
-ENDPATCH
-echo "  OK (appended)"
+
+'''
+    marker = '#undef IGNITION_HANDLER'
+    idx = s.find(marker)
+    if idx >= 0:
+        s = s[:idx] + insert + s[idx:]
+        with open('$INTERP_GEN', 'w') as f: f.write(s)
+        print('  OK (inserted before #undef)')
+    else:
+        print('  WARNING: #undef IGNITION_HANDLER not found')
+"
 
 # --- 5. Patch baseline-compiler.cc and bytecode-graph-builder.cc ---
+# Insert Visit methods BEFORE the closing namespace braces (inside the namespace)
 echo "[8/8] Patching baseline-compiler.cc and bytecode-graph-builder.cc..."
 
 BASELINE="$V8/src/baseline/baseline-compiler.cc"
-cat >> "$BASELINE" << 'ENDPATCH'
-
+python3 -c "
+with open('$BASELINE') as f: s = f.read()
+if 'VisitRecordReplayIncExecutionProgressCounter' in s:
+    print('  baseline: Already patched')
+else:
+    insert = '''
 // --- Open Replay: Record/Replay Visit methods ---
 
 void BaselineCompiler::VisitRecordReplayIncExecutionProgressCounter() {
+  SaveAccumulatorScope accumulator_scope(&basm_);
   CallRuntime(Runtime::kRecordReplayAssertExecutionProgress,
               __ FunctionOperand());
 }
 
 void BaselineCompiler::VisitRecordReplayInstrumentation() {
+  SaveAccumulatorScope accumulator_scope(&basm_);
   CallRuntime(Runtime::kRecordReplayInstrumentation,
               __ FunctionOperand(),
-              __ BytecodeOperandIdxSmi(0));
+              IndexAsSmi(0));
 }
 
 void BaselineCompiler::VisitRecordReplayInstrumentationGenerator() {
+  SaveAccumulatorScope accumulator_scope(&basm_);
   CallRuntime(Runtime::kRecordReplayInstrumentationGenerator,
               __ FunctionOperand(),
-              __ BytecodeOperandIdxSmi(0),
-              __ RegisterOperand(1));
+              IndexAsSmi(0),
+              RegisterOperand(1));
 }
 
 void BaselineCompiler::VisitRecordReplayAssertValue() {
   CallRuntime(Runtime::kRecordReplayAssertValue,
               __ FunctionOperand(),
-              __ BytecodeOperandIdxSmi(0),
+              IndexAsSmi(0),
               kInterpreterAccumulatorRegister);
 }
-ENDPATCH
-echo "  OK (baseline appended)"
+
+'''
+    # Insert before closing namespace for baseline
+    marker = '}  // namespace baseline'
+    idx = s.find(marker)
+    if idx >= 0:
+        s = s[:idx] + insert + s[idx:]
+        with open('$BASELINE', 'w') as f: f.write(s)
+        print('  baseline: OK (inserted before namespace close)')
+    else:
+        print('  baseline: WARNING: namespace close not found')
+"
 
 BGT="$V8/src/compiler/bytecode-graph-builder.cc"
-cat >> "$BGT" << 'ENDPATCH'
-
+python3 -c "
+with open('$BGT') as f: s = f.read()
+if 'VisitRecordReplayIncExecutionProgressCounter' in s:
+    print('  turbofan: Already patched')
+else:
+    insert = '''
 // --- Open Replay: Record/Replay Visit methods ---
 
 void BytecodeGraphBuilder::VisitRecordReplayIncExecutionProgressCounter() {
@@ -206,8 +311,18 @@ void BytecodeGraphBuilder::VisitRecordReplayAssertValue() {
       Runtime::kRecordReplayAssertValue, 3), closure, index, value);
   environment()->BindAccumulator(result);
 }
-ENDPATCH
-echo "  OK (turbofan appended)"
+
+'''
+    # Insert before closing namespace for compiler
+    marker = '}  // namespace compiler'
+    idx = s.find(marker)
+    if idx >= 0:
+        s = s[:idx] + insert + s[idx:]
+        with open('$BGT', 'w') as f: f.write(s)
+        print('  turbofan: OK (inserted before namespace close)')
+    else:
+        print('  turbofan: WARNING: namespace close not found')
+"
 
 # --- 6. Add runtime-recordreplay.cc to build ---
 echo ""

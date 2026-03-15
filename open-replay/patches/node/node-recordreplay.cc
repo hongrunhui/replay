@@ -8,6 +8,7 @@
 #include <dlfcn.h>
 
 #include "node_version.h"  // NODE_VERSION_STRING
+#include "replayio.h"  // v8::internal::recordreplay_api
 
 namespace node {
 namespace recordreplay {
@@ -32,6 +33,7 @@ typedef int (*ArePassedThroughFn)();
 typedef void (*OnInstrumentationFn)(int, int);
 typedef void (*BeginTraceFn)();
 typedef const int32_t* (*EndTraceFn)(uint32_t*);
+typedef void (*WriteHitCountsFn)(const char*);
 
 static AttachFn fn_attach = nullptr;
 static FinishRecordingFn fn_finish = nullptr;
@@ -51,6 +53,7 @@ static ArePassedThroughFn fn_are_passedthrough = nullptr;
 static OnInstrumentationFn fn_on_instrumentation = nullptr;
 static BeginTraceFn fn_begin_trace = nullptr;
 static EndTraceFn fn_end_trace = nullptr;
+static WriteHitCountsFn fn_write_hitcounts = nullptr;
 
 #define RESOLVE(handle, name, type) \
   fn_##name = reinterpret_cast<type>(dlsym(handle, "RecordReplay" #name)); \
@@ -104,22 +107,56 @@ bool InitializeDriver() {
   fn_on_instrumentation = reinterpret_cast<OnInstrumentationFn>(dlsym(driver_handle, "RecordReplayOnInstrumentation"));
   fn_begin_trace = reinterpret_cast<BeginTraceFn>(dlsym(driver_handle, "RecordReplayBeginCollectingTrace"));
   fn_end_trace = reinterpret_cast<EndTraceFn>(dlsym(driver_handle, "RecordReplayEndCollectingTrace"));
+  fn_write_hitcounts = reinterpret_cast<WriteHitCountsFn>(dlsym(driver_handle, "RecordReplayWriteHitCounts"));
 
-  if (!fn_attach) {
-    fprintf(stderr, "[openreplay] Driver loaded but missing RecordReplayAttach\n");
+  if (!fn_is_rr) {
+    // Driver not loaded or symbols not available
     return false;
   }
 
-  // Attach driver
-  const char* dispatch = "record";
-  if (strcmp(mode, "replay") == 0) dispatch = "replay";
-  fn_attach(dispatch, NODE_VERSION_STRING);
+  // Do NOT call fn_attach here — the driver's __attribute__((constructor))
+  // already called RecordReplayAttach during DYLD_INSERT_LIBRARIES loading.
+  // We only resolve symbols and wire up V8 function pointers.
 
-  fprintf(stderr, "[openreplay] Driver attached (mode=%s)\n", dispatch);
+  // Wire up V8 internal function pointers so runtime functions can call
+  // into the v8::recordreplay namespace without direct symbol linkage
+  // (avoids mksnapshot undefined symbol issues).
+  v8::internal::recordreplay_api::is_recording_or_replaying =
+      []() -> bool { return fn_is_rr && fn_is_rr(); };
+  v8::internal::recordreplay_api::is_replaying =
+      []() -> bool { return fn_is_rep && fn_is_rep(); };
+  v8::internal::recordreplay_api::on_target_progress_reached =
+      []() { /* TODO: notify replay engine */ };
+  v8::internal::recordreplay_api::on_instrumentation =
+      [](const char*, int script_id, int line) {
+        if (fn_on_instrumentation) fn_on_instrumentation(script_id, line);
+      };
+  v8::internal::recordreplay_api::assert_fn =
+      [](const char* site, uint64_t value_hash) {
+        if (fn_value) fn_value(site, static_cast<uintptr_t>(value_hash));
+      };
+  v8::internal::recordreplay_api::get_object_id =
+      [](void* object) -> uint64_t { return reinterpret_cast<uint64_t>(object); };
+
+  // Enable V8 instrumentation if requested (for hit count collection).
+  // OPENREPLAY_INSTRUMENT=1 causes bytecode generator to emit Instrumentation
+  // bytecodes at every statement position. Driver collects (script_id, line) hits.
+  if (getenv("OPENREPLAY_INSTRUMENT")) {
+    v8::internal::recordreplay_api::gRecordReplayInstrumentationEnabled = true;
+    if (fn_begin_trace) fn_begin_trace();
+    fprintf(stderr, "[openreplay] Instrumentation enabled\n");
+  }
+
   return true;
 }
 
 void ShutdownDriver() {
+  // Write hit counts to file if trace was collected
+  const char* trace_path = getenv("OPENREPLAY_TRACE_OUTPUT");
+  if (trace_path && fn_write_hitcounts) {
+    fn_write_hitcounts(trace_path);
+    fprintf(stderr, "[openreplay] Hit counts written to %s\n", trace_path);
+  }
   if (fn_detach) {
     fn_detach();
   }
