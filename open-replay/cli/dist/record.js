@@ -47,9 +47,30 @@ async function record(script, options) {
         env,
         stdio: 'inherit',
     });
-    child.on('close', (code) => {
+    child.on('close', async (code) => {
         console.log(`\nRecording finished (exit code: ${code})`);
         console.log(`Recordings saved to: ${(0, utils_js_1.getRecordingsDir)()}`);
+        // --serve: auto-start replay server after recording
+        if (options.serve) {
+            const { readdirSync, statSync } = await import('node:fs');
+            const { join } = await import('node:path');
+            const dir = (0, utils_js_1.getRecordingsDir)();
+            // Find the latest .orec file
+            const files = readdirSync(dir)
+                .filter(f => f.endsWith('.orec'))
+                .map(f => ({ name: f, mtime: statSync(join(dir, f)).mtimeMs }))
+                .sort((a, b) => b.mtime - a.mtime);
+            if (files.length === 0) {
+                console.error('No recordings found');
+                process.exit(1);
+            }
+            const recordingPath = join(dir, files[0].name);
+            const port = parseInt(options.port || '1234', 10);
+            console.log(`\nStarting replay server on http://localhost:${port}`);
+            console.log(`Recording: ${recordingPath}`);
+            const mod = await Function('p', 'return import(p)')('../../server/dist/index.js');
+            await mod.startServer({ port, recordingPath });
+        }
     });
     child.on('error', (err) => {
         console.error(`Failed to start: ${err.message}`);

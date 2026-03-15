@@ -124,7 +124,7 @@ async function serverReplay(recordingPath, options) {
     // Dynamic import to avoid compile-time dependency on server package
     let startServer;
     try {
-        const mod = await Function('p', 'return import(p)')('../../server/src/index.js');
+        const mod = await Function('p', 'return import(p)')('../../server/dist/index.js');
         startServer = mod.startServer;
     }
     catch {

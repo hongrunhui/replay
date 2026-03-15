@@ -16,6 +16,8 @@ program
     .description('Record a Node.js script execution')
     .option('-o, --output <path>', 'Output recording file path')
     .option('--node <path>', 'Path to Node.js binary (default: node)')
+    .option('-s, --serve', 'Auto-start replay server after recording')
+    .option('-p, --port <port>', 'Server port (with --serve)', '1234')
     .action(record_js_1.record);
 program
     .command('list')

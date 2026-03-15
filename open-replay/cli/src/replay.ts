@@ -141,7 +141,7 @@ async function serverReplay(recordingPath: string, options: ReplayOptions) {
   let startServer: (opts: { port: number; recordingPath: string }) => Promise<unknown>;
   try {
     const mod = await (Function('p', 'return import(p)') as (p: string) => Promise<any>)(
-      '../../server/src/index.js'
+      '../../server/dist/index.js'
     );
     startServer = mod.startServer;
   } catch {
