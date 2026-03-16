@@ -48,17 +48,47 @@
 .control-bar button:hover:not(:disabled) { background: #505050; }
 .control-bar button:disabled { opacity: 0.3; cursor: default; }
 
+/* Focus button */
+.focus-btn {
+  background: #3c3c3c !important;
+  border-color: #555 !important;
+  font-size: 12px !important;
+  white-space: nowrap;
+}
+.focus-btn.focus-active {
+  background: #264f78 !important;
+  border-color: #569cd6 !important;
+  color: #7ec8f2 !important;
+}
+.focus-btn.focus-active:hover:not(:disabled) {
+  background: #2a5a8a !important;
+}
+
 /* Timeline */
 .timeline { flex: 1; display: flex; align-items: center; gap: 8px; margin: 0 8px; }
-.timeline input[type="range"] {
+
+.timeline-track {
   flex: 1;
+  position: relative;
+  height: 20px;
+  display: flex;
+  align-items: center;
+}
+
+.timeline-track input[type="range"] {
+  position: absolute;
+  left: 0;
+  right: 0;
+  width: 100%;
   -webkit-appearance: none;
   height: 4px;
   background: #404040;
   border-radius: 2px;
   outline: none;
+  pointer-events: auto;
+  z-index: 2;
 }
-.timeline input[type="range"]::-webkit-slider-thumb {
+.timeline-track input[type="range"]::-webkit-slider-thumb {
   -webkit-appearance: none;
   width: 14px;
   height: 14px;
@@ -66,8 +96,106 @@
   border-radius: 50%;
   cursor: pointer;
   transition: transform 0.1s;
+  position: relative;
+  z-index: 3;
 }
-.timeline input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+.timeline-track input[type="range"]::-webkit-slider-thumb:hover { transform: scale(1.3); }
+
+/* Dual range slider for focus mode */
+.timeline-track input.range-start {
+  z-index: 3;
+  background: transparent;
+  pointer-events: none;
+}
+.timeline-track input.range-start::-webkit-slider-thumb {
+  pointer-events: auto;
+  background: #c586c0;
+}
+.timeline-track input.range-end {
+  z-index: 4;
+  background: transparent;
+  pointer-events: none;
+}
+.timeline-track input.range-end::-webkit-slider-thumb {
+  pointer-events: auto;
+  background: #c586c0;
+}
+
+/* Focus range highlight on track */
+.timeline-focus-highlight {
+  position: absolute;
+  top: 50%;
+  transform: translateY(-50%);
+  height: 6px;
+  background: rgba(197, 134, 192, 0.3);
+  border: 1px solid rgba(197, 134, 192, 0.5);
+  border-radius: 3px;
+  z-index: 1;
+  pointer-events: none;
+}
+
+/* Focus range active border on timeline */
+.timeline.focus-range {
+  border: 1px solid rgba(197, 134, 192, 0.3);
+  border-radius: 4px;
+  padding: 2px 4px;
+}
+
+/* Timeline progress indicator (loading) */
+.timeline-progress {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translateY(-50%);
+  height: 4px;
+  background: linear-gradient(90deg, #569cd6, #264f78, #569cd6);
+  background-size: 200% 100%;
+  animation: timeline-loading-anim 1.5s linear infinite;
+  border-radius: 2px;
+  width: 100%;
+  z-index: 0;
+  opacity: 0.5;
+}
+@keyframes timeline-loading-anim {
+  0% { background-position: 200% 0; }
+  100% { background-position: -200% 0; }
+}
+
+.timeline-loading {
+  color: #569cd6;
+  animation: timeline-loading-pulse 1s ease-in-out infinite;
+}
+@keyframes timeline-loading-pulse {
+  0%, 100% { opacity: 0.5; }
+  50% { opacity: 1; }
+}
+
+/* Timeline markers (console messages / errors) */
+.timeline-marker {
+  position: absolute;
+  top: 50%;
+  transform: translate(-50%, -50%);
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  z-index: 5;
+  cursor: pointer;
+  pointer-events: auto;
+}
+.timeline-marker:hover {
+  transform: translate(-50%, -50%) scale(1.6);
+}
+.timeline-marker-log {
+  background: #569cd6;
+  opacity: 0.7;
+}
+.timeline-marker-log:hover { opacity: 1; }
+.timeline-marker-error {
+  background: #f44747;
+  opacity: 0.9;
+}
+.timeline-marker-error:hover { opacity: 1; }
+
 .timeline-label { font-size: 12px; color: #888; min-width: 60px; white-space: nowrap; }
 
 /* Panels layout */
@@ -735,4 +863,42 @@
 .shortcut-desc {
   color: #888;
   font-size: 12px;
+}
+
+/* Frame Steps panel */
+.frame-steps-body {
+  max-height: 180px;
+}
+.frame-step-row {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 3px 0;
+  font-size: 12px;
+  cursor: pointer;
+  border-bottom: 1px solid #2d2d2d;
+}
+.frame-step-row:hover { background: rgba(255,255,255,0.04); color: #569cd6; }
+.frame-step-row.active {
+  background: #264f78;
+  color: #fff;
+  font-weight: 600;
+}
+.frame-step-icon {
+  width: 14px;
+  text-align: center;
+  flex-shrink: 0;
+  color: #888;
+}
+.frame-step-row.active .frame-step-icon { color: #9cdcfe; }
+.frame-step-line {
+  flex: 1;
+  color: #d4d4d4;
+}
+.frame-step-row.active .frame-step-line { color: #fff; }
+.frame-step-kind {
+  color: #666;
+  font-size: 10px;
+  text-transform: uppercase;
+  flex-shrink: 0;
 }

@@ -9,6 +9,7 @@ import { ConsolePanel } from './panels/ConsolePanel';
 import { ConnectPanel } from './panels/ConnectPanel';
 import { RecordingInfoBar } from './panels/RecordingInfoBar';
 import { WatchPanel } from './panels/WatchPanel';
+import { FrameStepsPanel, Step } from './panels/FrameStepsPanel';
 import { KeyboardShortcuts } from './panels/KeyboardShortcuts';
 import { parseSourceMap, mapHitCountsToOriginal, SourceMapData, OriginalPosition } from './sourcemap';
 import './styles.css';
@@ -39,6 +40,7 @@ export type AppState = {
   originalSourceCode: string;
   originalSourceName: string;
   originalHitCounts: Record<number, number>;
+  focusRange: { start: number; end: number } | null;
 };
 
 export function App() {
@@ -66,6 +68,7 @@ export function App() {
     originalSourceCode: '',
     originalSourceName: '',
     originalHitCounts: {},
+    focusRange: null,
   });
 
   const client = clientRef.current;
@@ -138,6 +141,10 @@ export function App() {
       sourceView: 'compiled',
       totalLines: s.sourceCode ? s.sourceCode.split('\n').length : 0,
     }));
+  }, []);
+
+  const setFocusRange = useCallback((range: { start: number; end: number } | null) => {
+    setState(s => ({ ...s, focusRange: range }));
   }, []);
 
   const connect = useCallback(async (url: string) => {
@@ -420,12 +427,26 @@ export function App() {
   const displayCode = state.sourceView === 'original' && state.originalSourceCode
     ? state.originalSourceCode
     : state.sourceCode;
-  const displayHitCounts = state.sourceView === 'original' && state.originalSourceCode
+  const rawHitCounts = state.sourceView === 'original' && state.originalSourceCode
     ? state.originalHitCounts
     : state.hitCounts;
+  // Filter hit counts by focus range if active
+  const displayHitCounts = state.focusRange
+    ? Object.fromEntries(
+        Object.entries(rawHitCounts).filter(([line]) => {
+          const l = Number(line);
+          return l >= state.focusRange!.start && l <= state.focusRange!.end;
+        })
+      )
+    : rawHitCounts;
   const displayFileName = state.sourceView === 'original' && state.originalSourceName
     ? state.originalSourceName
     : state.sourceFile;
+
+  // Generate frame steps from hit counts
+  const frameSteps: Step[] = Object.entries(displayHitCounts)
+    .map(([line]) => ({ line: +line, column: 0, kind: 'step' as const }))
+    .sort((a, b) => a.line - b.line);
 
   return (
     <div className="app">
@@ -449,6 +470,9 @@ export function App() {
             onStepBackward={stepBackward}
             onJumpToStart={jumpToStart}
             onRunToCompletion={runToCompletion}
+            focusRange={state.focusRange}
+            onSetFocusRange={setFocusRange}
+            consoleMessages={state.consoleMessages}
           />
           <div className="panels">
             <div className="source-tree-container">
@@ -509,6 +533,11 @@ export function App() {
             </div>
             <div className="panel-right">
               <CallStackPanel frames={state.frames} onSelectFrame={selectFrame} />
+              <FrameStepsPanel
+                steps={frameSteps}
+                currentLine={state.currentLine}
+                onJumpToStep={jumpToLine}
+              />
               <VariablesPanel
                 variables={state.variables}
                 evaluate={evaluate}
