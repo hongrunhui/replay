@@ -42,6 +42,7 @@ export declare class ReplayEngine extends EventEmitter {
     private currentPause;
     readonly scriptUrls: Map<string, string>;
     capturedStdout: string;
+    private lastStderr;
     constructor(opts: ReplayEngineOptions);
     private getNodePath;
     private getDriverPath;
@@ -59,6 +60,8 @@ export declare class ReplayEngine extends EventEmitter {
     onCDPEvent(method: string, handler: (params: unknown) => void): void;
     isPaused(): boolean;
     getPauseState(): PauseState | null;
+    /** Returns the last stderr output from the child process. Useful for diagnostics. */
+    getLastError(): string;
     resume(): Promise<void>;
     stepOver(): Promise<void>;
     stepInto(): Promise<void>;

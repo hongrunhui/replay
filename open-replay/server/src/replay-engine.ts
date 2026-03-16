@@ -79,6 +79,7 @@ export class ReplayEngine extends EventEmitter {
   private currentPause: PauseState | null = null;
   readonly scriptUrls = new Map<string, string>();   // scriptId -> url
   capturedStdout = '';  // stdout captured during current runToLine execution
+  private lastStderr = '';  // last stderr output from child process
 
   constructor(opts: ReplayEngineOptions) {
     super();
@@ -182,8 +183,11 @@ export class ReplayEngine extends EventEmitter {
 
     this.child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
 
+    this.lastStderr = '';
     this.child.stderr?.on('data', (data: Buffer) => {
-      this.emit('stderr', data.toString());
+      const msg = data.toString();
+      this.lastStderr += msg;
+      this.emit('stderr', msg);
     });
     this.child.stdout?.on('data', (data: Buffer) => {
       this.emit('stdout', data.toString());
@@ -257,15 +261,29 @@ export class ReplayEngine extends EventEmitter {
     });
 
     // Connect WebSocket to inspector
+    let lastConnectError: Error | null = null;
     for (let i = 0; i < 50; i++) {
       try {
         await this.connectWS();
         return;
-      } catch {
+      } catch (err: any) {
+        lastConnectError = err;
         await new Promise(r => setTimeout(r, 100));
       }
+      // After 10 retries, check if child process is still alive
+      if (i === 9 && this.child && this.child.exitCode !== null) {
+        throw new Error(
+          `Inspector connection failed after 10 retries: child process exited with code ${this.child.exitCode}. ` +
+          `stderr: ${this.lastStderr.slice(-500)}`
+        );
+      }
     }
-    throw new Error(`Could not connect to inspector on port ${this.inspectorPort}`);
+    throw new Error(
+      `Could not connect to inspector on port ${this.inspectorPort} after 50 retries. ` +
+      `Last error: ${lastConnectError?.message || 'unknown'}. ` +
+      `Ensure the patched Node.js is built and the recording file is valid. ` +
+      `stderr: ${this.lastStderr.slice(-500)}`
+    );
   }
 
   private connectWS(): Promise<void> {
@@ -338,6 +356,9 @@ export class ReplayEngine extends EventEmitter {
 
   isPaused(): boolean { return this.currentPause !== null; }
   getPauseState(): PauseState | null { return this.currentPause; }
+
+  /** Returns the last stderr output from the child process. Useful for diagnostics. */
+  getLastError(): string { return this.lastStderr; }
 
   async resume(): Promise<void> {
     await this.sendCDP('Debugger.resume');
@@ -425,9 +446,28 @@ export class ReplayEngine extends EventEmitter {
     // Read trace file written by driver
     const counts: Record<number, number> = {};
     try {
-      const { readFileSync, unlinkSync } = await import('node:fs');
+      const { readFileSync, unlinkSync, existsSync: fileExists } = await import('node:fs');
+
+      if (!fileExists(traceFile)) {
+        console.warn('[engine] Trace file not found:', traceFile, '- returning empty hit counts');
+        return counts;
+      }
+
       const json = readFileSync(traceFile, 'utf8');
-      const data = JSON.parse(json) as Record<string, Record<string, number>>;
+      if (!json || json.trim().length === 0) {
+        console.warn('[engine] Trace file is empty:', traceFile, '- returning empty hit counts');
+        try { unlinkSync(traceFile); } catch {}
+        return counts;
+      }
+
+      let data: Record<string, Record<string, number>>;
+      try {
+        data = JSON.parse(json);
+      } catch (parseErr: any) {
+        console.warn('[engine] Trace file is malformed:', traceFile, '-', parseErr.message, '- returning empty hit counts');
+        try { unlinkSync(traceFile); } catch {}
+        return counts;
+      }
 
       // The trace contains ALL scripts (Node.js internals + user code).
       // We need to find the user script's script_id.
@@ -605,8 +645,10 @@ export class ReplayEngine extends EventEmitter {
       nodeArgs.push(scriptPath || '-e void 0');
 
       this.child = spawn(nodePath, nodeArgs, { env, stdio: ['pipe', 'pipe', 'pipe'] });
+      this.lastStderr = '';
       this.child.stderr?.on('data', (d: Buffer) => {
         const msg = d.toString();
+        this.lastStderr += msg;
         const cpMatch = msg.match(/Fork checkpoint #(\d+) created \(child pid (\d+), events (\d+)\)/);
         if (cpMatch) {
           this.forkCheckpointPids.push({
@@ -725,7 +767,23 @@ export class ReplayEngine extends EventEmitter {
         resolveWithData(this.currentPause);
         return;
       }
-      this.once('exit', () => { this.off('paused', onPause); resolve(null); });
+      this.once('exit', (code: number) => {
+        this.off('paused', onPause);
+        // Process crashed or exited before hitting the breakpoint
+        if (code !== 0) {
+          const errState: PauseState = {
+            frames: [],
+            stdout: this.capturedStdout,
+            consoleMessages: [{
+              level: 'error',
+              text: `Process crashed before reaching line ${lineNumber + 1} (exit code: ${code}). stderr: ${this.lastStderr.slice(-500).trim()}`,
+            }],
+          };
+          resolve(errState);
+        } else {
+          resolve(null);
+        }
+      });
       setTimeout(() => { this.off('paused', onPause); resolve(null); }, 15000);
     });
   }
