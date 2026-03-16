@@ -1,13 +1,37 @@
 {
-  "name": "@open-replay/cli",
+  "name": "openreplay-cli",
   "version": "0.1.0",
-  "description": "Open Replay CLI — record and replay Node.js programs",
+  "description": "Open Replay CLI — record and time-travel debug Node.js programs",
   "bin": {
     "openreplay": "./dist/index.js"
   },
+  "files": [
+    "dist/"
+  ],
   "scripts": {
     "build": "tsc",
     "dev": "tsx src/index.ts"
+  },
+  "keywords": [
+    "debugger",
+    "time-travel",
+    "replay",
+    "record",
+    "nodejs",
+    "devtools"
+  ],
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/anthropics/open-replay.git",
+    "directory": "cli"
+  },
+  "homepage": "https://github.com/anthropics/open-replay#readme",
+  "bugs": {
+    "url": "https://github.com/anthropics/open-replay/issues"
+  },
+  "engines": {
+    "node": ">=18"
   },
   "dependencies": {
     "commander": "^12.0.0"

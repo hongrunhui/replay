@@ -2,8 +2,17 @@
   "name": "open-replay",
   "version": "0.1.0",
   "private": true,
+  "description": "Open-source time-travel debugger for Node.js",
   "workspaces": [
     "cli",
-    "server"
-  ]
+    "server",
+    "devtools"
+  ],
+  "scripts": {
+    "build": "npm run build --workspaces",
+    "build:cli": "cd cli && npm run build",
+    "build:server": "cd server && npm run build",
+    "build:devtools": "cd devtools && npm run build",
+    "build:driver": "cd driver && bash build.sh"
+  }
 }
