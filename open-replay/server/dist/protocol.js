@@ -812,6 +812,27 @@ class CDPProtocolHandler {
             case 'Analysis.addLocation':
             case 'Analysis.runAnalysis':
                 return {};
+            // --- Network ---
+            case 'Network.findRequests': {
+                // MVP: return empty array with placeholder structure.
+                // Future: parse recording events for HTTP request/response data
+                // captured via socket interception in the driver.
+                return {
+                    requests: [],
+                    // Each request will have: id, method, url, status, statusText,
+                    // duration, size, type, startLine
+                };
+            }
+            case 'Network.getRequestBody': {
+                const _requestId = params.requestId;
+                // Future: look up recorded request body from driver events
+                return { body: '', encoding: 'utf8' };
+            }
+            case 'Network.getResponseBody': {
+                const _requestId = params.requestId;
+                // Future: look up recorded response body from driver events
+                return { body: '', encoding: 'utf8' };
+            }
             // --- Graphics (not applicable for Node.js) ---
             case 'Graphics.getPaintContents':
                 return { data: '' };

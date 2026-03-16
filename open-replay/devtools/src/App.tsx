@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
-import { ReplayClient, PauseFrame, ConsoleMessage, SourceInfo, RecordingInfo } from './protocol';
+import { ReplayClient, PauseFrame, ConsoleMessage, SourceInfo, RecordingInfo, NetworkRequest } from './protocol';
 import { SourcePanel } from './panels/SourcePanel';
 import { SourceTreePanel } from './panels/SourceTreePanel';
 import { ControlBar } from './panels/ControlBar';
 import { VariablesPanel } from './panels/VariablesPanel';
 import { CallStackPanel } from './panels/CallStackPanel';
 import { ConsolePanel } from './panels/ConsolePanel';
+import { NetworkPanel } from './panels/NetworkPanel';
 import { ConnectPanel } from './panels/ConnectPanel';
 import { RecordingInfoBar } from './panels/RecordingInfoBar';
 import { WatchPanel } from './panels/WatchPanel';
@@ -41,6 +42,10 @@ export type AppState = {
   originalSourceName: string;
   originalHitCounts: Record<number, number>;
   focusRange: { start: number; end: number } | null;
+  sourceMapLoading: boolean;
+  sourceMapError: string | null;
+  networkRequests: NetworkRequest[];
+  rightBottomTab: 'console' | 'network';
 };
 
 export function App() {
@@ -69,6 +74,10 @@ export function App() {
     originalSourceName: '',
     originalHitCounts: {},
     focusRange: null,
+    sourceMapLoading: false,
+    sourceMapError: null,
+    networkRequests: [],
+    rightBottomTab: 'console',
   });
 
   const client = clientRef.current;
@@ -79,6 +88,7 @@ export function App() {
 
   // Helper: probe for sourcemap and update state
   const loadSourceMapForFile = useCallback(async (filePath: string) => {
+    setState(s => ({ ...s, sourceMapLoading: true, sourceMapError: null }));
     try {
       const rawMap = await client.getSourceMap(filePath);
       if (rawMap && rawMap.sources && rawMap.sources.length > 0) {
@@ -93,11 +103,27 @@ export function App() {
           originalSourceName: '',
           sourceView: 'compiled',
           originalHitCounts: {},
+          sourceMapLoading: false,
+          sourceMapError: null,
         }));
         return { map: rawMap as SourceMapData, mapping };
       }
-    } catch (err) {
-      console.log('[devtools] No sourcemap for', filePath);
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      console.error('[devtools] Failed to load sourcemap for', filePath, ':', message);
+      setState(s => ({
+        ...s,
+        sourceMap: null,
+        sourceMapLineMapping: null,
+        originalSources: [],
+        originalSourceCode: '',
+        originalSourceName: '',
+        sourceView: 'compiled',
+        originalHitCounts: {},
+        sourceMapLoading: false,
+        sourceMapError: `Failed to load source map: ${message}`,
+      }));
+      return null;
     }
     // Clear sourcemap state if none found
     setState(s => ({
@@ -109,12 +135,15 @@ export function App() {
       originalSourceName: '',
       sourceView: 'compiled',
       originalHitCounts: {},
+      sourceMapLoading: false,
+      sourceMapError: null,
     }));
     return null;
   }, [client]);
 
   // Load an original source from the sourcemap
   const loadOriginalSource = useCallback(async (sourceName: string) => {
+    setState(s => ({ ...s, sourceMapLoading: true, sourceMapError: null }));
     try {
       const sourceFile = sourceFileRef.current;
       const contents = await client.getOriginalSource(sourceFile, sourceName);
@@ -128,10 +157,24 @@ export function App() {
           originalHitCounts: s.sourceMapLineMapping
             ? mapHitCountsToOriginal(s.hitCounts, s.sourceMapLineMapping, sourceName)
             : {},
+          sourceMapLoading: false,
+          sourceMapError: null,
+        }));
+      } else {
+        setState(s => ({
+          ...s,
+          sourceMapLoading: false,
+          sourceMapError: `Original source "${sourceName}" is empty or could not be loaded`,
         }));
       }
-    } catch (err) {
-      console.error('[devtools] Failed to load original source:', err);
+    } catch (err: any) {
+      const message = err?.message || String(err);
+      console.error('[devtools] Failed to load original source:', message);
+      setState(s => ({
+        ...s,
+        sourceMapLoading: false,
+        sourceMapError: `Failed to load original source "${sourceName}": ${message}`,
+      }));
     }
   }, [client]);
 
@@ -201,6 +244,14 @@ export function App() {
           console.error('[devtools] Hit count collection failed:', err);
         });
       }
+
+      // Fetch network requests in background
+      client.findNetworkRequests().then(requests => {
+        console.log('[devtools] Network requests received:', requests.length);
+        setState(s => ({ ...s, networkRequests: requests }));
+      }).catch(err => {
+        console.error('[devtools] Network request fetch failed:', err);
+      });
     } catch (e: any) {
       setState(s => ({ ...s, status: `Error: ${e.message}`, loading: false }));
     }
@@ -485,8 +536,23 @@ export function App() {
             <div className="panel-left">
               {state.sourceFile && (
                 <div className="source-file-header">
-                  <span className="source-file-path">{displayFileName}</span>
-                  {state.originalSources.length > 0 && (
+                  <span className="source-file-path">
+                    {displayFileName}
+                    {state.sourceView === 'original' && state.originalSourceName && (
+                      <span className="original-source-badge" title={state.originalSourceName}>
+                        {' '}(original: {state.originalSourceName.split('/').pop()})
+                      </span>
+                    )}
+                  </span>
+                  {state.sourceMapLoading && (
+                    <span className="sourcemap-status loading">Loading source map...</span>
+                  )}
+                  {state.sourceMapError && (
+                    <span className="sourcemap-status error" title={state.sourceMapError}>
+                      {state.sourceMapError}
+                    </span>
+                  )}
+                  {!state.sourceMapLoading && !state.sourceMapError && state.originalSources.length > 0 && (
                     <div className="source-view-tabs">
                       <button
                         className={`source-view-tab ${state.sourceView === 'compiled' ? 'active' : ''}`}
@@ -499,7 +565,7 @@ export function App() {
                           className={`source-view-tab ${state.sourceView === 'original' ? 'active' : ''}`}
                           onClick={() => loadOriginalSource(state.originalSources[0])}
                         >
-                          Original
+                          Original ({state.originalSources[0].split('/').pop()})
                         </button>
                       ) : (
                         <select
@@ -509,7 +575,7 @@ export function App() {
                             if (e.target.value) loadOriginalSource(e.target.value);
                           }}
                         >
-                          <option value="">Original...</option>
+                          <option value="">Original ({state.originalSources.length} sources)...</option>
                           {state.originalSources.map(src => (
                             <option key={src} value={src}>{src.split('/').pop()}</option>
                           ))}
@@ -547,7 +613,27 @@ export function App() {
                 evaluate={evaluate}
                 paused={state.frames.length > 0}
               />
-              <ConsolePanel messages={state.consoleMessages} onJumpToLine={jumpToLine} />
+              <div className="bottom-tabs">
+                <div className="bottom-tab-bar">
+                  <button
+                    className={`bottom-tab-btn ${state.rightBottomTab === 'console' ? 'active' : ''}`}
+                    onClick={() => setState(s => ({ ...s, rightBottomTab: 'console' }))}
+                  >
+                    Console
+                  </button>
+                  <button
+                    className={`bottom-tab-btn ${state.rightBottomTab === 'network' ? 'active' : ''}`}
+                    onClick={() => setState(s => ({ ...s, rightBottomTab: 'network' }))}
+                  >
+                    Network
+                  </button>
+                </div>
+                {state.rightBottomTab === 'console' ? (
+                  <ConsolePanel messages={state.consoleMessages} onJumpToLine={jumpToLine} />
+                ) : (
+                  <NetworkPanel requests={state.networkRequests} />
+                )}
+              </div>
             </div>
           </div>
         </>

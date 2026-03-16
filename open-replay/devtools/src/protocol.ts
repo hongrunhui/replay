@@ -36,6 +36,18 @@ export type SourceInfo = {
   url: string;
 };
 
+export type NetworkRequest = {
+  id: string;
+  method: string;       // GET, POST, etc.
+  url: string;
+  status: number;
+  statusText: string;
+  duration: number;     // ms
+  size: number;         // bytes
+  type: string;         // xhr, fetch, etc.
+  startLine?: number;   // source line that made the request
+};
+
 export class ReplayClient {
   private ws: WebSocket | null = null;
   private nextId = 1;
@@ -180,6 +192,21 @@ export class ReplayClient {
   async getObjectPreview(objectId: string): Promise<Array<{ name: string; value: unknown; type: string; objectId?: string }>> {
     const r = await this.send('Pause.getObjectPreview', { objectId });
     return r?.properties || [];
+  }
+
+  async findNetworkRequests(): Promise<NetworkRequest[]> {
+    const r = await this.send('Network.findRequests');
+    return r?.requests || [];
+  }
+
+  async getRequestBody(requestId: string): Promise<string> {
+    const r = await this.send('Network.getRequestBody', { requestId });
+    return r?.body || '';
+  }
+
+  async getResponseBody(requestId: string): Promise<string> {
+    const r = await this.send('Network.getResponseBody', { requestId });
+    return r?.body || '';
   }
 
   disconnect() {

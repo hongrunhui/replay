@@ -865,6 +865,105 @@
   font-size: 12px;
 }
 
+/* Bottom tab bar (Console / Network switcher) */
+.bottom-tabs {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  min-height: 0;
+}
+.bottom-tab-bar {
+  display: flex;
+  gap: 0;
+  background: #252526;
+  border-bottom: 1px solid #404040;
+  flex-shrink: 0;
+}
+.bottom-tab-btn {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: #888;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  padding: 6px 14px;
+  cursor: pointer;
+  transition: color 0.15s, border-color 0.15s;
+}
+.bottom-tab-btn:hover { color: #d4d4d4; }
+.bottom-tab-btn.active {
+  color: #d4d4d4;
+  border-bottom-color: #569cd6;
+}
+
+/* Network panel */
+.net-table {
+  width: 100%;
+  border-collapse: collapse;
+  font-size: 12px;
+  font-family: 'SF Mono', 'Fira Code', Menlo, monospace;
+}
+.net-th {
+  text-align: left;
+  padding: 4px 8px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
+  color: #888;
+  background: #252526;
+  border-bottom: 1px solid #404040;
+  position: sticky;
+  top: 0;
+  z-index: 1;
+}
+.net-row {
+  cursor: pointer;
+  border-bottom: 1px solid #2d2d2d;
+}
+.net-row:nth-child(even) { background: rgba(255,255,255,0.02); }
+.net-row:hover { background: rgba(255,255,255,0.06); }
+.net-row-selected { background: #264f78 !important; }
+.net-td {
+  padding: 3px 8px;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  max-width: 0;
+}
+.net-url {
+  color: #d4d4d4;
+  max-width: 300px;
+}
+.net-duration { color: #888; }
+.net-size { color: #888; }
+
+/* Method badges */
+.net-method-badge {
+  display: inline-block;
+  padding: 1px 5px;
+  border-radius: 3px;
+  font-size: 10px;
+  font-weight: 700;
+  letter-spacing: 0.3px;
+  text-align: center;
+  min-width: 38px;
+}
+.net-method-get { background: #264f78; color: #7ec8f2; }
+.net-method-post { background: #1e3a1e; color: #4ec9b0; }
+.net-method-put { background: #3a3a1e; color: #dcdcaa; }
+.net-method-delete { background: #3a1e1e; color: #f44747; }
+.net-method-patch { background: #2e1e3a; color: #c586c0; }
+
+/* Status code coloring */
+.net-status { font-weight: 600; font-size: 11px; }
+.net-status-2xx { color: #4ec9b0; }
+.net-status-3xx { color: #569cd6; }
+.net-status-4xx { color: #cca700; }
+.net-status-5xx { color: #f44747; }
+
 /* Frame Steps panel */
 .frame-steps-body {
   max-height: 180px;
