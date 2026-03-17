@@ -1,12 +1,10 @@
 import React, { useState, useEffect } from 'react';
 
 export function ConnectPanel({ onConnect }: { onConnect: (url: string) => void }) {
-  // Auto-detect: use same host/port as the page was loaded from
   const autoUrl = `ws://${window.location.host}`;
   const [url, setUrl] = useState(autoUrl);
   const [autoConnecting, setAutoConnecting] = useState(true);
 
-  // Auto-connect on mount
   useEffect(() => {
     setAutoConnecting(true);
     onConnect(autoUrl);
@@ -14,9 +12,13 @@ export function ConnectPanel({ onConnect }: { onConnect: (url: string) => void }
 
   return (
     <div className="connect-panel">
-      <h2>Open Replay DevTools</h2>
+      <div className="connect-panel-logo">
+        <div className="connect-panel-logo-icon">OR</div>
+        <div className="connect-panel-logo-text">Open Replay</div>
+      </div>
+
       {autoConnecting ? (
-        <p className="hint">Connecting to {autoUrl}...</p>
+        <p className="connecting-spinner">Connecting to {autoUrl}...</p>
       ) : (
         <>
           <p className="hint">
@@ -31,6 +33,9 @@ export function ConnectPanel({ onConnect }: { onConnect: (url: string) => void }
           <button onClick={() => onConnect(url)}>Connect</button>
         </>
       )}
+      <p className="hint" style={{ marginTop: 8, fontSize: 11, color: '#666' }}>
+        Start a replay server with: openreplay replay &lt;recording-id&gt;
+      </p>
     </div>
   );
 }

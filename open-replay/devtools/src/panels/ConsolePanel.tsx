@@ -35,8 +35,8 @@ export function ConsolePanel({ messages, onJumpToLine }: ConsolePanelProps) {
   }, [messages]);
 
   return (
-    <div className="panel-section" style={{ flex: 1 }}>
-      <div className="panel-header console-header">
+    <div className="console-panel-section">
+      <div className="console-header">
         <span>Console ({filtered.length})</span>
         <div className="console-filters">
           {(['all', 'log', 'warn', 'error'] as LogFilter[]).map(level => (
@@ -51,9 +51,9 @@ export function ConsolePanel({ messages, onJumpToLine }: ConsolePanelProps) {
           ))}
         </div>
       </div>
-      <div className="panel-body" style={{ maxHeight: 'none', flex: 1 }}>
+      <div className="console-body">
         {filtered.length === 0 && (
-          <div style={{ color: '#666', fontSize: 12, padding: '8px 0' }}>
+          <div className="panel-empty" style={{ padding: '8px 0' }}>
             {messages.length === 0
               ? 'Click a line or run to completion to see console output'
               : `No ${filter} messages`}

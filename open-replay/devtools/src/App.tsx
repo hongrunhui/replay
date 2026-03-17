@@ -1,21 +1,23 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { ReplayClient, PauseFrame, ConsoleMessage, SourceInfo, RecordingInfo, NetworkRequest } from './protocol';
 import { SourcePanel } from './panels/SourcePanel';
-import { SourceTreePanel } from './panels/SourceTreePanel';
-import { ControlBar } from './panels/ControlBar';
-import { VariablesPanel } from './panels/VariablesPanel';
-import { CallStackPanel } from './panels/CallStackPanel';
+import { SidePanel } from './panels/SidePanel';
+import { DebugPanel } from './panels/DebugPanel';
+import { TimelineBar } from './panels/TimelineBar';
 import { ConsolePanel } from './panels/ConsolePanel';
 import { NetworkPanel } from './panels/NetworkPanel';
 import { ConnectPanel } from './panels/ConnectPanel';
-import { RecordingInfoBar } from './panels/RecordingInfoBar';
-import { WatchPanel } from './panels/WatchPanel';
-import { FrameStepsPanel, Step } from './panels/FrameStepsPanel';
 import { KeyboardShortcuts } from './panels/KeyboardShortcuts';
+import { Step } from './panels/FrameStepsPanel';
 import { parseSourceMap, mapHitCountsToOriginal, SourceMapData, OriginalPosition } from './sourcemap';
 import './styles.css';
 
 export type SourceView = 'compiled' | 'original';
+
+type OpenFile = {
+  path: string;
+  content: string;
+};
 
 export type AppState = {
   connected: boolean;
@@ -33,7 +35,6 @@ export type AppState = {
   totalLines: number;
   recordingInfo: RecordingInfo | null;
   totalEvents: number;
-  // SourceMap state
   sourceView: SourceView;
   sourceMap: SourceMapData | null;
   sourceMapLineMapping: Map<number, OriginalPosition> | null;
@@ -45,7 +46,13 @@ export type AppState = {
   sourceMapLoading: boolean;
   sourceMapError: string | null;
   networkRequests: NetworkRequest[];
-  rightBottomTab: 'console' | 'network';
+  // Layout state
+  bottomTab: 'console' | 'network' | 'search';
+  openFiles: OpenFile[];
+  activeFile: string;
+  sidePanelCollapsed: boolean;
+  debugPanelCollapsed: boolean;
+  bottomPanelHeight: number;
 };
 
 export function App() {
@@ -77,71 +84,48 @@ export function App() {
     sourceMapLoading: false,
     sourceMapError: null,
     networkRequests: [],
-    rightBottomTab: 'console',
+    bottomTab: 'console',
+    openFiles: [],
+    activeFile: '',
+    sidePanelCollapsed: false,
+    debugPanelCollapsed: false,
+    bottomPanelHeight: 200,
   });
 
   const client = clientRef.current;
-
-  // Use ref to avoid stale closure for sourceFile
   const sourceFileRef = useRef(state.sourceFile);
   sourceFileRef.current = state.sourceFile;
 
-  // Helper: probe for sourcemap and update state
+  // ---- Source map helpers ----
   const loadSourceMapForFile = useCallback(async (filePath: string) => {
     setState(s => ({ ...s, sourceMapLoading: true, sourceMapError: null }));
     try {
       const rawMap = await client.getSourceMap(filePath);
       if (rawMap && rawMap.sources && rawMap.sources.length > 0) {
         const mapping = parseSourceMap(rawMap as SourceMapData);
-        console.log('[devtools] SourceMap loaded:', rawMap.sources.length, 'original sources,', mapping.size, 'line mappings');
         setState(s => ({
-          ...s,
-          sourceMap: rawMap as SourceMapData,
-          sourceMapLineMapping: mapping,
-          originalSources: rawMap.sources,
-          originalSourceCode: '',
-          originalSourceName: '',
-          sourceView: 'compiled',
-          originalHitCounts: {},
-          sourceMapLoading: false,
-          sourceMapError: null,
+          ...s, sourceMap: rawMap as SourceMapData, sourceMapLineMapping: mapping,
+          originalSources: rawMap.sources, originalSourceCode: '', originalSourceName: '',
+          sourceView: 'compiled', originalHitCounts: {}, sourceMapLoading: false, sourceMapError: null,
         }));
         return { map: rawMap as SourceMapData, mapping };
       }
     } catch (err: any) {
-      const message = err?.message || String(err);
-      console.error('[devtools] Failed to load sourcemap for', filePath, ':', message);
       setState(s => ({
-        ...s,
-        sourceMap: null,
-        sourceMapLineMapping: null,
-        originalSources: [],
-        originalSourceCode: '',
-        originalSourceName: '',
-        sourceView: 'compiled',
-        originalHitCounts: {},
-        sourceMapLoading: false,
-        sourceMapError: `Failed to load source map: ${message}`,
+        ...s, sourceMap: null, sourceMapLineMapping: null, originalSources: [],
+        originalSourceCode: '', originalSourceName: '', sourceView: 'compiled',
+        originalHitCounts: {}, sourceMapLoading: false, sourceMapError: `Failed to load source map: ${err?.message || String(err)}`,
       }));
       return null;
     }
-    // Clear sourcemap state if none found
     setState(s => ({
-      ...s,
-      sourceMap: null,
-      sourceMapLineMapping: null,
-      originalSources: [],
-      originalSourceCode: '',
-      originalSourceName: '',
-      sourceView: 'compiled',
-      originalHitCounts: {},
-      sourceMapLoading: false,
-      sourceMapError: null,
+      ...s, sourceMap: null, sourceMapLineMapping: null, originalSources: [],
+      originalSourceCode: '', originalSourceName: '', sourceView: 'compiled',
+      originalHitCounts: {}, sourceMapLoading: false, sourceMapError: null,
     }));
     return null;
   }, [client]);
 
-  // Load an original source from the sourcemap
   const loadOriginalSource = useCallback(async (sourceName: string) => {
     setState(s => ({ ...s, sourceMapLoading: true, sourceMapError: null }));
     try {
@@ -149,47 +133,94 @@ export function App() {
       const contents = await client.getOriginalSource(sourceFile, sourceName);
       if (contents) {
         setState(s => ({
-          ...s,
-          originalSourceCode: contents,
-          originalSourceName: sourceName,
-          sourceView: 'original',
-          totalLines: contents.split('\n').length,
-          originalHitCounts: s.sourceMapLineMapping
-            ? mapHitCountsToOriginal(s.hitCounts, s.sourceMapLineMapping, sourceName)
-            : {},
-          sourceMapLoading: false,
-          sourceMapError: null,
+          ...s, originalSourceCode: contents, originalSourceName: sourceName,
+          sourceView: 'original', totalLines: contents.split('\n').length,
+          originalHitCounts: s.sourceMapLineMapping ? mapHitCountsToOriginal(s.hitCounts, s.sourceMapLineMapping, sourceName) : {},
+          sourceMapLoading: false, sourceMapError: null,
         }));
       } else {
-        setState(s => ({
-          ...s,
-          sourceMapLoading: false,
-          sourceMapError: `Original source "${sourceName}" is empty or could not be loaded`,
-        }));
+        setState(s => ({ ...s, sourceMapLoading: false, sourceMapError: `Original source "${sourceName}" is empty or could not be loaded` }));
       }
     } catch (err: any) {
-      const message = err?.message || String(err);
-      console.error('[devtools] Failed to load original source:', message);
-      setState(s => ({
-        ...s,
-        sourceMapLoading: false,
-        sourceMapError: `Failed to load original source "${sourceName}": ${message}`,
-      }));
+      setState(s => ({ ...s, sourceMapLoading: false, sourceMapError: `Failed to load original source "${sourceName}": ${err?.message || String(err)}` }));
     }
   }, [client]);
 
   const switchToCompiled = useCallback(() => {
-    setState(s => ({
-      ...s,
-      sourceView: 'compiled',
-      totalLines: s.sourceCode ? s.sourceCode.split('\n').length : 0,
-    }));
+    setState(s => ({ ...s, sourceView: 'compiled', totalLines: s.sourceCode ? s.sourceCode.split('\n').length : 0 }));
   }, []);
 
   const setFocusRange = useCallback((range: { start: number; end: number } | null) => {
     setState(s => ({ ...s, focusRange: range }));
   }, []);
 
+  // ---- File tab management ----
+  const addOpenFile = useCallback((path: string, content: string) => {
+    setState(s => {
+      const exists = s.openFiles.find(f => f.path === path);
+      if (exists) {
+        // Update content and switch to it
+        return {
+          ...s,
+          openFiles: s.openFiles.map(f => f.path === path ? { ...f, content } : f),
+          activeFile: path,
+        };
+      }
+      return {
+        ...s,
+        openFiles: [...s.openFiles, { path, content }],
+        activeFile: path,
+      };
+    });
+  }, []);
+
+  const switchFile = useCallback((path: string) => {
+    setState(s => {
+      const file = s.openFiles.find(f => f.path === path);
+      if (!file) return s;
+      return {
+        ...s,
+        activeFile: path,
+        sourceCode: file.content,
+        sourceFile: path,
+        totalLines: file.content.split('\n').length,
+        sourceView: 'compiled',
+        sourceMap: null, sourceMapLineMapping: null, originalSources: [],
+        originalSourceCode: '', originalSourceName: '', originalHitCounts: {},
+      };
+    });
+  }, []);
+
+  const closeFile = useCallback((path: string) => {
+    setState(s => {
+      const newFiles = s.openFiles.filter(f => f.path !== path);
+      let newActive = s.activeFile;
+      let newCode = s.sourceCode;
+      let newSourceFile = s.sourceFile;
+      if (s.activeFile === path) {
+        if (newFiles.length > 0) {
+          const last = newFiles[newFiles.length - 1];
+          newActive = last.path;
+          newCode = last.content;
+          newSourceFile = last.path;
+        } else {
+          newActive = '';
+          newCode = '';
+          newSourceFile = '';
+        }
+      }
+      return {
+        ...s,
+        openFiles: newFiles,
+        activeFile: newActive,
+        sourceCode: newCode,
+        sourceFile: newSourceFile,
+        totalLines: newCode ? newCode.split('\n').length : 0,
+      };
+    });
+  }, []);
+
+  // ---- Connection ----
   const connect = useCallback(async (url: string) => {
     try {
       setState(s => ({ ...s, status: 'Connecting...', loading: true }));
@@ -199,133 +230,94 @@ export function App() {
       const info = await client.getDescription();
       const sources = await client.getSources();
 
-      // Auto-load the recorded script source
       const scriptPath = (info as any).scriptPath || (info as any).recordingPath || '';
       let sourceCode = '';
       let sourceFile = '';
       if (scriptPath) {
-        try {
-          sourceCode = await client.readFile(scriptPath);
-          sourceFile = scriptPath;
-        } catch {}
+        try { sourceCode = await client.readFile(scriptPath); sourceFile = scriptPath; } catch {}
       }
 
-      // Extract total events from info if available
       const totalEvents = (info as any).totalEvents || (info as any).eventCount || 0;
+
+      const openFiles: OpenFile[] = [];
+      if (sourceCode && sourceFile) {
+        openFiles.push({ path: sourceFile, content: sourceCode });
+      }
 
       setState(s => ({
         ...s, connected: true, sources, loading: false,
         sourceCode, sourceFile,
         totalLines: sourceCode ? sourceCode.split('\n').length : 0,
         status: `Connected: ${info.title || scriptPath.split('/').pop()} -- collecting hit counts...`,
-        recordingInfo: info,
-        totalEvents,
+        recordingInfo: info, totalEvents,
+        openFiles, activeFile: sourceFile,
       }));
 
-      // Probe for sourcemap in background
-      if (scriptPath) {
-        loadSourceMapForFile(scriptPath).catch(() => {});
-      }
+      if (scriptPath) loadSourceMapForFile(scriptPath).catch(() => {});
 
-      // Collect line execution counts in background
       if (scriptPath) {
-        console.log('[devtools] Collecting hit counts for:', scriptPath);
         client.collectHitCounts(scriptPath).then(counts => {
-          console.log('[devtools] Hit counts received:', Object.keys(counts).length, 'lines');
           setState(s => ({
-            ...s,
-            hitCounts: counts,
+            ...s, hitCounts: counts,
             status: s.status.replace(' -- collecting hit counts...', ''),
             originalHitCounts: s.sourceMapLineMapping && s.originalSourceName
-              ? mapHitCountsToOriginal(counts, s.sourceMapLineMapping, s.originalSourceName)
-              : {},
+              ? mapHitCountsToOriginal(counts, s.sourceMapLineMapping, s.originalSourceName) : {},
           }));
-        }).catch(err => {
-          console.error('[devtools] Hit count collection failed:', err);
-        });
+        }).catch(err => console.error('[devtools] Hit count collection failed:', err));
       }
 
-      // Fetch network requests in background
       client.findNetworkRequests().then(requests => {
-        console.log('[devtools] Network requests received:', requests.length);
         setState(s => ({ ...s, networkRequests: requests }));
-      }).catch(err => {
-        console.error('[devtools] Network request fetch failed:', err);
-      });
+      }).catch(err => console.error('[devtools] Network request fetch failed:', err));
     } catch (e: any) {
       setState(s => ({ ...s, status: `Error: ${e.message}`, loading: false }));
     }
   }, [client, loadSourceMapForFile]);
 
+  // ---- Load source file ----
   const loadSource = useCallback(async (filePath: string) => {
     try {
       let contents = '';
-      // Try reading as a local file path first
-      try {
-        contents = await client.readFile(filePath);
-      } catch {}
-      // Fallback: try getSourceContents using sourceId lookup
+      try { contents = await client.readFile(filePath); } catch {}
       if (!contents) {
         try {
           const sources = await client.getSources();
           const match = sources.find(s => s.url === filePath || s.sourceId === filePath);
-          if (match) {
-            contents = await client.getSourceContents(match.sourceId);
-          }
+          if (match) contents = await client.getSourceContents(match.sourceId);
         } catch {}
       }
       if (contents) {
+        addOpenFile(filePath, contents);
         setState(prev => ({
-          ...prev,
-          sourceCode: contents,
-          sourceFile: filePath,
+          ...prev, sourceCode: contents, sourceFile: filePath,
           totalLines: contents.split('\n').length,
-          // Reset sourcemap state when switching files
-          sourceView: 'compiled',
-          sourceMap: null,
-          sourceMapLineMapping: null,
-          originalSources: [],
-          originalSourceCode: '',
-          originalSourceName: '',
-          originalHitCounts: {},
+          sourceView: 'compiled', sourceMap: null, sourceMapLineMapping: null,
+          originalSources: [], originalSourceCode: '', originalSourceName: '', originalHitCounts: {},
         }));
-        // Probe for sourcemap on the new file
         loadSourceMapForFile(filePath).catch(() => {});
       }
     } catch {}
-  }, [client, loadSourceMapForFile]);
+  }, [client, loadSourceMapForFile, addOpenFile]);
 
+  // ---- Jump to line ----
   const jumpToLine = useCallback(async (line: number) => {
     if (!client.connected) return;
     const file = sourceFileRef.current;
-    if (!file) { console.warn('No source file'); return; }
+    if (!file) return;
     setState(s => ({ ...s, loading: true, status: `Jumping to line ${line + 1}...` }));
     try {
       const result = await client.runToLine(file, line);
       if (result.paused && result.frames?.length) {
         const topFrame = result.frames[0];
-        // Get scope variables via CDP
         let vars: Record<string, unknown> = {};
         try {
           const scopes = await client.getScope(topFrame.frameId);
-          for (const scope of scopes) {
-            for (const binding of scope.bindings) {
-              vars[binding.name] = binding.value;
-            }
-          }
+          for (const scope of scopes) for (const binding of scope.bindings) vars[binding.name] = binding.value;
         } catch {}
-
-        // Console output from runToLine = output produced up to this line
         const consoleOutput = (result as any).console || [];
-
         setState(s => ({
-          ...s,
-          currentLine: topFrame.line,
-          frames: result.frames!,
-          variables: vars,
-          consoleMessages: consoleOutput,
-          loading: false,
-          status: `Paused at line ${topFrame.line + 1}`,
+          ...s, currentLine: topFrame.line, frames: result.frames!, variables: vars,
+          consoleMessages: consoleOutput, loading: false, status: `Paused at line ${topFrame.line + 1}`,
         }));
       } else {
         setState(s => ({ ...s, loading: false, status: 'Script completed (breakpoint not hit)' }));
@@ -350,87 +342,61 @@ export function App() {
   const toggleBreakpoint = useCallback((line: number) => {
     setState(s => {
       const bp = new Set(s.breakpoints);
-      if (bp.has(line)) bp.delete(line);
-      else bp.add(line);
+      if (bp.has(line)) bp.delete(line); else bp.add(line);
       return { ...s, breakpoints: bp };
     });
   }, []);
 
   const stepForward = useCallback(() => {
-    if (state.currentLine !== null) {
-      jumpToLine(state.currentLine + 1);
-    }
+    if (state.currentLine !== null) jumpToLine(state.currentLine + 1);
   }, [state.currentLine, jumpToLine]);
 
   const stepBackward = useCallback(() => {
-    if (state.currentLine !== null && state.currentLine > 0) {
-      jumpToLine(state.currentLine - 1);
-    }
+    if (state.currentLine !== null && state.currentLine > 0) jumpToLine(state.currentLine - 1);
   }, [state.currentLine, jumpToLine]);
 
   const jumpToStart = useCallback(() => jumpToLine(0), [jumpToLine]);
 
-  // Handle clicking a call stack frame — load that file and scroll to line
   const selectFrame = useCallback(async (frame: PauseFrame) => {
     if (!frame.url) return;
-    // Resolve file path from URL (strip file:// prefix)
     const filePath = frame.url.replace(/^file:\/\//, '');
     const currentFile = sourceFileRef.current;
-    // If it's a different file, load it
     if (filePath && filePath !== currentFile) {
       try {
         let contents = '';
-        try {
-          contents = await client.readFile(filePath);
-        } catch {
-          // Fallback: try getSourceContents with the URL as sourceId
+        try { contents = await client.readFile(filePath); } catch {
           const sources = await client.getSources();
           const match = sources.find(s => s.url === frame.url);
-          if (match) {
-            contents = await client.getSourceContents(match.sourceId);
-          }
+          if (match) contents = await client.getSourceContents(match.sourceId);
         }
         if (contents) {
+          addOpenFile(filePath, contents);
           setState(prev => ({
-            ...prev,
-            sourceCode: contents,
-            sourceFile: filePath,
-            totalLines: contents.split('\n').length,
-            currentLine: frame.line,
+            ...prev, sourceCode: contents, sourceFile: filePath,
+            totalLines: contents.split('\n').length, currentLine: frame.line,
           }));
           return;
         }
       } catch {}
     }
-    // Same file or load failed — just highlight the line
     setState(prev => ({ ...prev, currentLine: frame.line }));
-  }, [client]);
+  }, [client, addOpenFile]);
 
-  // Run to completion: run the replay to the end and collect all console output
   const runToCompletion = useCallback(async () => {
     if (!client.connected) return;
     setState(s => ({ ...s, loading: true, status: 'Running to completion...' }));
     try {
       const result = await client.run();
       const messages: ConsoleMessage[] = result.messages || [];
-      // If the server returned stdout as text, convert to console messages
       if (messages.length === 0 && result.stdout) {
         const lines = result.stdout.split('\n').filter((l: string) => l.length > 0);
         for (let i = 0; i < lines.length; i++) {
-          messages.push({
-            messageId: `run-${i}`,
-            level: 'log',
-            text: lines[i],
-          });
+          messages.push({ messageId: `run-${i}`, level: 'log', text: lines[i] });
         }
       }
       setState(s => ({
-        ...s,
-        loading: false,
-        consoleMessages: messages,
-        currentLine: null,
-        frames: [],
-        variables: {},
+        ...s, loading: false, consoleMessages: messages, currentLine: null,
+        frames: [], variables: {},
         status: `Completed (exit code: ${result.exitCode ?? 0}, ${messages.length} message${messages.length !== 1 ? 's' : ''})`,
       }));
     } catch (e: any) {
@@ -438,33 +404,24 @@ export function App() {
     }
   }, [client]);
 
-  // Keyboard shortcuts
+  // ---- Keyboard shortcuts ----
   useEffect(() => {
     function handleKeyDown(e: KeyboardEvent) {
-      // F8 or Ctrl+Enter: step forward
       if (e.key === 'F8' && !e.shiftKey) {
         e.preventDefault();
-        if (state.connected && state.currentLine !== null && !state.loading) {
-          stepForward();
-        }
+        if (state.connected && state.currentLine !== null && !state.loading) stepForward();
         return;
       }
       if (e.key === 'Enter' && e.ctrlKey) {
         e.preventDefault();
-        if (state.connected && state.currentLine !== null && !state.loading) {
-          stepForward();
-        }
+        if (state.connected && state.currentLine !== null && !state.loading) stepForward();
         return;
       }
-      // Shift+F8: step backward
       if (e.key === 'F8' && e.shiftKey) {
         e.preventDefault();
-        if (state.connected && state.currentLine !== null && state.currentLine > 0 && !state.loading) {
-          stepBackward();
-        }
+        if (state.connected && state.currentLine !== null && state.currentLine > 0 && !state.loading) stepBackward();
         return;
       }
-      // Escape: clear hover tooltip (handled by dispatching a custom event)
       if (e.key === 'Escape') {
         document.dispatchEvent(new CustomEvent('openreplay-clear-hover'));
         return;
@@ -474,170 +431,236 @@ export function App() {
     return () => window.removeEventListener('keydown', handleKeyDown);
   }, [state.connected, state.currentLine, state.loading, stepForward, stepBackward]);
 
-  // Determine which code and hit counts to display based on source view
+  // ---- Computed display values ----
   const displayCode = state.sourceView === 'original' && state.originalSourceCode
-    ? state.originalSourceCode
-    : state.sourceCode;
+    ? state.originalSourceCode : state.sourceCode;
   const rawHitCounts = state.sourceView === 'original' && state.originalSourceCode
-    ? state.originalHitCounts
-    : state.hitCounts;
-  // Filter hit counts by focus range if active
+    ? state.originalHitCounts : state.hitCounts;
   const displayHitCounts = state.focusRange
-    ? Object.fromEntries(
-        Object.entries(rawHitCounts).filter(([line]) => {
-          const l = Number(line);
-          return l >= state.focusRange!.start && l <= state.focusRange!.end;
-        })
-      )
+    ? Object.fromEntries(Object.entries(rawHitCounts).filter(([line]) => {
+        const l = Number(line);
+        return l >= state.focusRange!.start && l <= state.focusRange!.end;
+      }))
     : rawHitCounts;
   const displayFileName = state.sourceView === 'original' && state.originalSourceName
-    ? state.originalSourceName
-    : state.sourceFile;
+    ? state.originalSourceName : state.sourceFile;
 
-  // Generate frame steps from hit counts
   const frameSteps: Step[] = Object.entries(displayHitCounts)
     .map(([line]) => ({ line: +line, column: 0, kind: 'step' as const }))
     .sort((a, b) => a.line - b.line);
 
+  // ---- Bottom panel resize ----
+  const bottomPanelRef = useRef<HTMLDivElement>(null);
+  const handleBottomResize = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    const startY = e.clientY;
+    const startHeight = state.bottomPanelHeight;
+    const onMouseMove = (ev: MouseEvent) => {
+      const delta = startY - ev.clientY;
+      const newHeight = Math.max(80, Math.min(600, startHeight + delta));
+      setState(s => ({ ...s, bottomPanelHeight: newHeight }));
+    };
+    const onMouseUp = () => {
+      document.removeEventListener('mousemove', onMouseMove);
+      document.removeEventListener('mouseup', onMouseUp);
+    };
+    document.addEventListener('mousemove', onMouseMove);
+    document.addEventListener('mouseup', onMouseUp);
+  }, [state.bottomPanelHeight]);
+
+  // ---- Recording info for header ----
+  const scriptName = state.recordingInfo
+    ? ((state.recordingInfo as any).scriptPath?.split('/').pop() || state.recordingInfo.title || 'Unknown')
+    : '';
+
+  if (!state.connected) {
+    return (
+      <div className="devtools-app">
+        <ConnectPanel onConnect={connect} />
+      </div>
+    );
+  }
+
   return (
-    <div className="app">
-      <div className="toolbar">
-        <span className="logo">Open Replay DevTools</span>
-        <span className="status">{state.status}</span>
-        <KeyboardShortcuts />
+    <div className="devtools-app">
+      {/* Header */}
+      <div className="header">
+        <div className="header-logo">
+          <div className="header-logo-icon">OR</div>
+          <span className="header-logo-text">Open Replay</span>
+        </div>
+
+        <div className="header-separator" />
+
+        <div className="header-recording-info">
+          {scriptName && (
+            <div className="header-info-item">
+              <span className="header-info-label">Script</span>
+              <span className="header-info-value" title={(state.recordingInfo as any)?.scriptPath || ''}>{scriptName}</span>
+            </div>
+          )}
+          {state.totalEvents > 0 && (
+            <div className="header-info-item">
+              <span className="header-info-label">Events</span>
+              <span className="header-info-value">{state.totalEvents.toLocaleString()}</span>
+            </div>
+          )}
+          {state.recordingInfo?.recordingPath && (
+            <div className="header-info-item">
+              <span className="header-info-label">Recording</span>
+              <span className="header-info-value" title={state.recordingInfo.recordingPath}>
+                {state.recordingInfo.recordingPath.split('/').pop()}
+              </span>
+            </div>
+          )}
+        </div>
+
+        <span className={`header-status ${state.loading ? 'loading' : ''}`}>
+          {state.status}
+        </span>
+
+        <div className="header-actions">
+          {state.debugPanelCollapsed && (
+            <button className="panel-toggle-btn" onClick={() => setState(s => ({ ...s, debugPanelCollapsed: false }))}
+              title="Show debugger">
+              {'\u25C0'}
+            </button>
+          )}
+          <KeyboardShortcuts />
+        </div>
       </div>
 
-      {!state.connected ? (
-        <ConnectPanel onConnect={connect} />
-      ) : (
-        <>
-          <RecordingInfoBar info={state.recordingInfo} totalEvents={state.totalEvents} />
-          <ControlBar
-            currentLine={state.currentLine}
-            totalLines={state.totalLines}
-            loading={state.loading}
-            onJumpToLine={jumpToLine}
-            onStepForward={stepForward}
-            onStepBackward={stepBackward}
-            onJumpToStart={jumpToStart}
-            onRunToCompletion={runToCompletion}
-            focusRange={state.focusRange}
-            onSetFocusRange={setFocusRange}
-            consoleMessages={state.consoleMessages}
-          />
-          <div className="panels">
-            <div className="source-tree-container">
-              <SourceTreePanel
-                sources={state.sources}
-                currentFile={state.sourceFile}
-                onSelectFile={loadSource}
-              />
-            </div>
-            <div className="panel-left">
-              {state.sourceFile && (
-                <div className="source-file-header">
-                  <span className="source-file-path">
-                    {displayFileName}
-                    {state.sourceView === 'original' && state.originalSourceName && (
-                      <span className="original-source-badge" title={state.originalSourceName}>
-                        {' '}(original: {state.originalSourceName.split('/').pop()})
-                      </span>
-                    )}
-                  </span>
-                  {state.sourceMapLoading && (
-                    <span className="sourcemap-status loading">Loading source map...</span>
-                  )}
-                  {state.sourceMapError && (
-                    <span className="sourcemap-status error" title={state.sourceMapError}>
-                      {state.sourceMapError}
-                    </span>
-                  )}
-                  {!state.sourceMapLoading && !state.sourceMapError && state.originalSources.length > 0 && (
-                    <div className="source-view-tabs">
-                      <button
-                        className={`source-view-tab ${state.sourceView === 'compiled' ? 'active' : ''}`}
-                        onClick={switchToCompiled}
-                      >
-                        Compiled
-                      </button>
-                      {state.originalSources.length === 1 ? (
-                        <button
-                          className={`source-view-tab ${state.sourceView === 'original' ? 'active' : ''}`}
-                          onClick={() => loadOriginalSource(state.originalSources[0])}
-                        >
-                          Original ({state.originalSources[0].split('/').pop()})
-                        </button>
-                      ) : (
-                        <select
-                          className={`source-view-select ${state.sourceView === 'original' ? 'active' : ''}`}
-                          value={state.sourceView === 'original' ? state.originalSourceName : ''}
-                          onChange={(e) => {
-                            if (e.target.value) loadOriginalSource(e.target.value);
-                          }}
-                        >
-                          <option value="">Original ({state.originalSources.length} sources)...</option>
-                          {state.originalSources.map(src => (
-                            <option key={src} value={src}>{src.split('/').pop()}</option>
-                          ))}
-                        </select>
-                      )}
-                    </div>
-                  )}
-                </div>
+      {/* Side Panel */}
+      <SidePanel
+        sources={state.sources}
+        currentFile={state.sourceFile}
+        onSelectFile={loadSource}
+        breakpoints={state.breakpoints}
+        onToggleBreakpoint={toggleBreakpoint}
+        consoleMessages={state.consoleMessages}
+        onJumpToLine={jumpToLine}
+        collapsed={state.sidePanelCollapsed}
+        onToggleCollapse={() => setState(s => ({ ...s, sidePanelCollapsed: !s.sidePanelCollapsed }))}
+      />
+
+      {/* Main Area */}
+      <div className="main-area">
+        {/* Source file header with sourcemap controls */}
+        {state.sourceFile && (
+          <div className="source-file-header">
+            <span className="source-file-path">
+              {displayFileName}
+              {state.sourceView === 'original' && state.originalSourceName && (
+                <span className="original-source-badge">
+                  {' '}(original: {state.originalSourceName.split('/').pop()})
+                </span>
               )}
-              <SourcePanel
-                code={displayCode}
-                currentLine={state.currentLine}
-                breakpoints={state.breakpoints}
-                hitCounts={displayHitCounts}
-                onToggleBreakpoint={toggleBreakpoint}
-                onClickLine={jumpToLine}
-                onLoadFile={loadSource}
-                sourceFile={state.sourceFile}
-                evaluate={state.frames.length > 0 ? evaluate : undefined}
-              />
-            </div>
-            <div className="panel-right">
-              <CallStackPanel frames={state.frames} onSelectFrame={selectFrame} />
-              <FrameStepsPanel
-                steps={frameSteps}
-                currentLine={state.currentLine}
-                onJumpToStep={jumpToLine}
-              />
-              <VariablesPanel
-                variables={state.variables}
-                evaluate={evaluate}
-                frameId={state.frames[0]?.frameId}
-              />
-              <WatchPanel
-                evaluate={evaluate}
-                paused={state.frames.length > 0}
-              />
-              <div className="bottom-tabs">
-                <div className="bottom-tab-bar">
+            </span>
+            {state.sourceMapLoading && (
+              <span className="sourcemap-status loading">Loading source map...</span>
+            )}
+            {state.sourceMapError && (
+              <span className="sourcemap-status error" title={state.sourceMapError}>
+                {state.sourceMapError}
+              </span>
+            )}
+            {!state.sourceMapLoading && !state.sourceMapError && state.originalSources.length > 0 && (
+              <div className="source-view-tabs">
+                <button
+                  className={`source-view-tab ${state.sourceView === 'compiled' ? 'active' : ''}`}
+                  onClick={switchToCompiled}
+                >Compiled</button>
+                {state.originalSources.length === 1 ? (
                   <button
-                    className={`bottom-tab-btn ${state.rightBottomTab === 'console' ? 'active' : ''}`}
-                    onClick={() => setState(s => ({ ...s, rightBottomTab: 'console' }))}
-                  >
-                    Console
-                  </button>
-                  <button
-                    className={`bottom-tab-btn ${state.rightBottomTab === 'network' ? 'active' : ''}`}
-                    onClick={() => setState(s => ({ ...s, rightBottomTab: 'network' }))}
-                  >
-                    Network
-                  </button>
-                </div>
-                {state.rightBottomTab === 'console' ? (
-                  <ConsolePanel messages={state.consoleMessages} onJumpToLine={jumpToLine} />
+                    className={`source-view-tab ${state.sourceView === 'original' ? 'active' : ''}`}
+                    onClick={() => loadOriginalSource(state.originalSources[0])}
+                  >Original ({state.originalSources[0].split('/').pop()})</button>
                 ) : (
-                  <NetworkPanel requests={state.networkRequests} />
+                  <select
+                    className={`source-view-select ${state.sourceView === 'original' ? 'active' : ''}`}
+                    value={state.sourceView === 'original' ? state.originalSourceName : ''}
+                    onChange={(e) => { if (e.target.value) loadOriginalSource(e.target.value); }}
+                  >
+                    <option value="">Original ({state.originalSources.length} sources)...</option>
+                    {state.originalSources.map(src => (
+                      <option key={src} value={src}>{src.split('/').pop()}</option>
+                    ))}
+                  </select>
                 )}
               </div>
-            </div>
+            )}
           </div>
-        </>
-      )}
+        )}
+
+        {/* Source Panel with file tabs */}
+        <SourcePanel
+          code={displayCode}
+          currentLine={state.currentLine}
+          breakpoints={state.breakpoints}
+          hitCounts={displayHitCounts}
+          onToggleBreakpoint={toggleBreakpoint}
+          onClickLine={jumpToLine}
+          onLoadFile={loadSource}
+          sourceFile={state.sourceFile}
+          evaluate={state.frames.length > 0 ? evaluate : undefined}
+          openFiles={state.openFiles}
+          activeFile={state.activeFile}
+          onSwitchFile={switchFile}
+          onCloseFile={closeFile}
+        />
+
+        {/* Bottom Panel */}
+        <div className="bottom-panel" ref={bottomPanelRef} style={{ height: state.bottomPanelHeight }}>
+          <div className="bottom-panel-resize" onMouseDown={handleBottomResize} />
+          <div className="bottom-tab-bar">
+            <button
+              className={`bottom-tab-btn ${state.bottomTab === 'console' ? 'active' : ''}`}
+              onClick={() => setState(s => ({ ...s, bottomTab: 'console' }))}
+            >Console</button>
+            <button
+              className={`bottom-tab-btn ${state.bottomTab === 'network' ? 'active' : ''}`}
+              onClick={() => setState(s => ({ ...s, bottomTab: 'network' }))}
+            >Network</button>
+          </div>
+          <div className="bottom-panel-content">
+            {state.bottomTab === 'console' ? (
+              <ConsolePanel messages={state.consoleMessages} onJumpToLine={jumpToLine} />
+            ) : (
+              <NetworkPanel requests={state.networkRequests} />
+            )}
+          </div>
+        </div>
+      </div>
+
+      {/* Debug Panel (Right) */}
+      <DebugPanel
+        frames={state.frames}
+        onSelectFrame={selectFrame}
+        variables={state.variables}
+        evaluate={evaluate}
+        frameId={state.frames[0]?.frameId}
+        paused={state.frames.length > 0}
+        frameSteps={frameSteps}
+        currentLine={state.currentLine}
+        onJumpToStep={jumpToLine}
+        collapsed={state.debugPanelCollapsed}
+        onToggleCollapse={() => setState(s => ({ ...s, debugPanelCollapsed: !s.debugPanelCollapsed }))}
+      />
+
+      {/* Timeline Bar */}
+      <TimelineBar
+        currentLine={state.currentLine}
+        totalLines={state.totalLines}
+        loading={state.loading}
+        onJumpToLine={jumpToLine}
+        onStepForward={stepForward}
+        onStepBackward={stepBackward}
+        onJumpToStart={jumpToStart}
+        onRunToCompletion={runToCompletion}
+        focusRange={state.focusRange}
+        onSetFocusRange={setFocusRange}
+        consoleMessages={state.consoleMessages}
+      />
     </div>
   );
 }
