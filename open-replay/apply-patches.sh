@@ -372,6 +372,69 @@ else:
 "
 fi
 
+# --- Patch crypto_util.cc (CSPRNG determinism) ---
+echo "[extra] Patching crypto_util.cc for deterministic CSPRNG..."
+CRYPTO_UTIL="$NODE_DIR/src/crypto/crypto_util.cc"
+python3 -c "
+with open('$CRYPTO_UTIL') as f: s = f.read()
+if 'initCsprngHook' in s:
+    print('  Already patched')
+else:
+    marker = 'MUST_USE_RESULT CSPRNGResult CSPRNG(void* buffer, size_t length) {'
+    idx = s.find(marker)
+    if idx >= 0:
+        hook = '''// Open Replay: CSPRNG record/replay hook.
+#include <dlfcn.h>
+static bool sCsprngInitialized = false;
+static bool sCsprngEnabled = false;
+typedef int (*IsRecFn)();
+typedef int (*BytesFn)(const char*, void*, size_t);
+static IsRecFn sCsprngIsRec = nullptr;
+static IsRecFn sCsprngIsRep = nullptr;
+static BytesFn sCsprngBytes = nullptr;
+static void initCsprngHook() {
+  if (sCsprngInitialized) return;
+  sCsprngInitialized = true;
+  void* h = dlopen(nullptr, RTLD_NOW);
+  if (!h) return;
+  auto isRR = (IsRecFn)dlsym(h, \"RecordReplayIsRecordingOrReplaying\");
+  if (!isRR || !isRR()) return;
+  sCsprngIsRec = (IsRecFn)dlsym(h, \"RecordReplayIsRecording\");
+  sCsprngIsRep = (IsRecFn)dlsym(h, \"RecordReplayIsReplaying\");
+  sCsprngBytes = (BytesFn)dlsym(h, \"RecordReplayBytes\");
+  sCsprngEnabled = sCsprngIsRec && sCsprngIsRep && sCsprngBytes;
+}
+
+'''
+        # Insert hook before CSPRNG function
+        s = s[:idx] + hook + s[idx:]
+        # Now insert the interception code inside CSPRNG after the opening brace
+        body_start = s.find('{', idx + len(hook)) + 1
+        intercept = '''
+  // Open Replay: intercept CSPRNG for deterministic crypto
+  initCsprngHook();
+  if (sCsprngEnabled && length > 0) {
+    if (sCsprngIsRec()) {
+      if (1 != RAND_bytes_ex(nullptr, buf, length, 0)) return {false};
+      sCsprngBytes(\"CSPRNG\", buf, length);
+      return {true};
+    }
+    if (sCsprngIsRep()) {
+      if (sCsprngBytes(\"CSPRNG\", buf, length)) return {true};
+      return {false};
+    }
+  }
+'''
+        # Find 'unsigned char* buf' line after body_start
+        buf_line = s.find('unsigned char* buf', body_start)
+        eol = s.find('\\n', buf_line) + 1
+        s = s[:eol] + intercept + s[eol:]
+        with open('$CRYPTO_UTIL', 'w') as f: f.write(s)
+        print('  OK')
+    else:
+        print('  WARNING: CSPRNG function not found')
+"
+
 echo ""
 echo "=== All patches applied ==="
 echo ""
