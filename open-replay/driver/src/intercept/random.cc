@@ -68,12 +68,37 @@ int my_getentropy(void* buf, size_t buflen) {
 // own entropy pool. We intercept RAND_bytes directly.
 
 // Forward declarations (avoid #include <openssl/rand.h> dependency).
-// Node.js v22 uses RAND_bytes_ex (not RAND_bytes) from OpenSSL 3.x.
-// OSSL_LIB_CTX is an opaque type — we just pass it through.
+// Node.js v20 uses both RAND_bytes and RAND_bytes_ex from OpenSSL 3.x.
+// crypto.randomBytes() → RAND_bytes_ex, crypto.randomUUID() → RAND_bytes.
 typedef struct ossl_lib_ctx_st OSSL_LIB_CTX;
+int RAND_bytes(unsigned char* buf, int num);
 int RAND_bytes_ex(OSSL_LIB_CTX* ctx, unsigned char* buf, size_t num,
                   unsigned int strength);
 
+// Intercept RAND_bytes (used by crypto.randomUUID, some crypto paths)
+int my_RAND_bytes(unsigned char* buf, int num) {
+  InterceptGuard guard;
+  if (!guard) return RAND_bytes(buf, num);
+
+  if (RecordReplayIsRecording()) {
+    int ret = RAND_bytes(buf, num);
+    if (ret == 1 && buf && num > 0) {
+      RecordReplayBytes("RAND_bytes", buf, static_cast<size_t>(num));
+    }
+    return static_cast<int>(RecordReplayValue("RAND_bytes.ret",
+        static_cast<uintptr_t>(ret)));
+  }
+  if (RecordReplayIsReplaying()) {
+    int ret = static_cast<int>(RecordReplayValue("RAND_bytes.ret", 0));
+    if (ret == 1 && buf && num > 0) {
+      RecordReplayBytes("RAND_bytes", buf, static_cast<size_t>(num));
+    }
+    return ret;
+  }
+  return RAND_bytes(buf, num);
+}
+
+// Intercept RAND_bytes_ex (used by crypto.randomBytes in OpenSSL 3.x)
 int my_RAND_bytes_ex(OSSL_LIB_CTX* ctx, unsigned char* buf, size_t num,
                      unsigned int strength) {
   InterceptGuard guard;
@@ -125,5 +150,6 @@ ssize_t my_getrandom(void* buf, size_t buflen, unsigned int flags) {
 DYLD_INTERPOSE(my_arc4random, arc4random)
 DYLD_INTERPOSE(my_arc4random_buf, arc4random_buf)
 DYLD_INTERPOSE(my_getentropy, getentropy)
+DYLD_INTERPOSE(my_RAND_bytes, RAND_bytes)
 DYLD_INTERPOSE(my_RAND_bytes_ex, RAND_bytes_ex)
 #endif
