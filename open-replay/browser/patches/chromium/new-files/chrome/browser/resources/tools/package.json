@@ -1,0 +1,6 @@
+{
+  "_comment": "[open-replay browser patch 2026-04-27] rollup_plugin.js 用 ES module 语法（export default），需要 type=module；外层 chromium/src/package.json 是 commonjs，这里覆盖。",
+  "name": "chromium-rollup-tools",
+  "private": true,
+  "type": "module"
+}

@@ -1,0 +1,19 @@
+diff --git a/src/Reactor/LLVMJIT.cpp b/src/Reactor/LLVMJIT.cpp
+index d3dbdb987e..a27ee40388 100644
+--- a/src/Reactor/LLVMJIT.cpp
++++ b/src/Reactor/LLVMJIT.cpp
+@@ -551,7 +551,14 @@ class ExternalSymbolGenerator : public llvm::orc::JITDylib::DefinitionGenerator
+ 			functions.try_emplace("memset", reinterpret_cast<void *>(memset));
+ 
+ #ifdef __APPLE__
++// [open-replay browser patch 2026-04-28] __sincosf_stret 是 macOS x86 私有
++// 符号；arm64 SDK 14.2 已不导出。arm64 上 LLVM 把 sincos 拆成两次 sinf/cosf 调用，
++// 不会真用到 sincosf_stret，所以这里在 arm64 上注册 sincosf 占位兜底。
++#  if defined(__x86_64__) || defined(__i386__)
+ 			functions.try_emplace("__sincosf_stret", reinterpret_cast<void *>(__sincosf_stret));
++#  else
++			functions.try_emplace("sincosf", reinterpret_cast<void *>(sincosf));
++#  endif
+ #elif defined(__linux__)
+ 			functions.try_emplace("sincosf", reinterpret_cast<void *>(sincosf));
+ #elif defined(_WIN64)

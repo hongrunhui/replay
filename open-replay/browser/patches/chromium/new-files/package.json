@@ -1,0 +1,6 @@
+{
+  "_comment": "[open-replay browser patch 2026-04-27] 阻止外层目录的 'type: module' 污染 chromium 工具脚本（如 tools/polymer/html_minifier.js 用 CommonJS require()）",
+  "name": "chromium-build-isolate",
+  "private": true,
+  "type": "commonjs"
+}

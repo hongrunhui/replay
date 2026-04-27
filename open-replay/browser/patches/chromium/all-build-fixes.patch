@@ -1,0 +1,326 @@
+diff --git a/BUILD.gn b/BUILD.gn
+index a6b18dea12365..f018f939cd242 100644
+--- a/BUILD.gn
++++ b/BUILD.gn
+@@ -1054,7 +1054,11 @@ group("gn_visibility") {
+   ]
+ 
+   if (!is_ios) {
+-    deps += [ "//v8:postmortem-metadata" ]
++    # [open-replay browser patch 2026-04-27] 移除了对 //v8:postmortem-metadata 的依赖。
++    # 该 target 仅在 v8_postmortem_support=true 时存在（默认 false），且 visibility 限制
++    # 为 v8/* 内部，本来这条 deps 就只在显式开启时有效；为了避免默认配置下 GN 报
++    # "Unresolved dependencies"，直接拿掉。需要时在 args.gn 加 v8_postmortem_support=true
++    # 并相应放开 visibility。
+     if (!v8_use_external_startup_data) {
+       deps += [ "//v8:v8_snapshot" ]
+     }
+diff --git a/base/allocator/partition_allocator/address_space_randomization.cc b/base/allocator/partition_allocator/address_space_randomization.cc
+index 83dde608bc942..cdad436d2ce04 100644
+--- a/base/allocator/partition_allocator/address_space_randomization.cc
++++ b/base/allocator/partition_allocator/address_space_randomization.cc
+@@ -19,7 +19,11 @@
+ namespace partition_alloc {
+ 
+ uintptr_t GetRandomPageBase() {
+-  recordreplay::AutoDisallowEvents disallow("GetRandomPageBase");
++  // [open-replay browser patch 2026-04-27] 注释掉 —— partition_alloc 不链
++  // record_replay.cc，recordreplay:: C++ 命名空间符号 link 不到。临时去掉，
++  // 功能影响：GetRandomPageBase 内部的 RNG 调用会被录到 .orec 里，
++  // 不影响正确性，只是录制大一点。后续用 record_replay_inline.h 替代。
++  // recordreplay::AutoDisallowEvents disallow("GetRandomPageBase");
+ 
+   uintptr_t random = static_cast<uintptr_t>(internal::RandomValue());
+ 
+diff --git a/base/allocator/partition_allocator/partition_alloc_hooks.cc b/base/allocator/partition_allocator/partition_alloc_hooks.cc
+index 7fdd6dbcda5d5..9c667c854f986 100644
+--- a/base/allocator/partition_allocator/partition_alloc_hooks.cc
++++ b/base/allocator/partition_allocator/partition_alloc_hooks.cc
+@@ -54,7 +54,11 @@ void PartitionAllocHooks::SetObserverHooks(AllocationObserverHook* alloc_hook,
+ void PartitionAllocHooks::SetOverrideHooks(AllocationOverrideHook* alloc_hook,
+                                            FreeOverrideHook* free_hook,
+                                            ReallocOverrideHook realloc_hook) {
+-  if (recordreplay::IsRecordingOrReplaying()) {
++  // [open-replay browser patch 2026-04-27] 同上 link error 缓解。
++  // 改成 false 让 hook override 始终走默认路径；功能影响：录制时不能用自定义
++  // alloc hook，但 record_replay 本意也是不要自定义 hook（"Always use the default
++  // allocators when recording/replaying"），所以语义上等价于"假装在录制"。
++  if (false /* recordreplay::IsRecordingOrReplaying() */) {
+     // Always use the default allocators when recording/replaying.
+     return;
+   }
+diff --git a/base/record_replay_inline.h b/base/record_replay_inline.h
+index 6bd99fba3d6d5..e02665ee84d76 100644
+--- a/base/record_replay_inline.h
++++ b/base/record_replay_inline.h
+@@ -17,6 +17,45 @@ static void* LookupRecordReplaySymbol(const char* name) {
+   return fnptr ? fnptr : reinterpret_cast<void*>(1);
+ }
+ 
++// [open-replay browser patch 2026-04-27]
++// 补 partition_alloc 用到的 recordreplay::AutoDisallowEvents inline 版本。
++// Replay.io fork 在 base/record_replay.cc 提供完整的 C++ 命名空间实现，
++// 但 partition_alloc 子组件不链 record_replay.cc，又调用了 AutoDisallowEvents，
++// 引发 link error。这里以 dlsym(RTLD_DEFAULT, ...) 在运行期解析 driver 的
++// V8RecordReplayBeginDisallowEventsWithLabel / V8RecordReplayEndDisallowEvents。
++namespace recordreplay {
++
++struct AutoDisallowEvents {
++  void *fnEnd;
++  AutoDisallowEvents(const char* label = nullptr) {
++    void* fnBegin = LookupRecordReplaySymbol(
++        label ? "V8RecordReplayBeginDisallowEventsWithLabel"
++              : "V8RecordReplayBeginDisallowEvents");
++    fnEnd = LookupRecordReplaySymbol("V8RecordReplayEndDisallowEvents");
++    if (fnBegin != reinterpret_cast<void*>(1)) {
++      if (label) {
++        reinterpret_cast<void(*)(const char*)>(fnBegin)(label);
++      } else {
++        reinterpret_cast<void(*)()>(fnBegin)();
++      }
++    }
++  }
++  ~AutoDisallowEvents() {
++    if (fnEnd != reinterpret_cast<void*>(1)) {
++      reinterpret_cast<void(*)()>(fnEnd)();
++    }
++  }
++};
++
++inline bool IsRecordingOrReplaying(const char* feature = nullptr,
++                                    const char* subfeature = nullptr) {
++  void* fn = LookupRecordReplaySymbol("V8IsRecordingOrReplaying");
++  if (fn == reinterpret_cast<void*>(1)) return false;
++  return reinterpret_cast<bool(*)(const char*, const char*)>(fn)(feature, subfeature);
++}
++
++}  // namespace recordreplay
++
+ struct RecordReplayAutoPassThroughEvents {
+   void *fnBegin;
+   void *fnEnd;
+diff --git a/build/android/gyp/util/build_utils.py b/build/android/gyp/util/build_utils.py
+index af19f14fb6cc8..704dd6c52ad0a 100644
+--- a/build/android/gyp/util/build_utils.py
++++ b/build/android/gyp/util/build_utils.py
+@@ -12,9 +12,14 @@ import fnmatch
+ import json
+ import logging
+ import os
+-import pipes
+-import re
++# [open-replay browser patch 2026-04-27] Python 3.13 删了 pipes 模块；
++# pipes.quote 行为完全等同于 shlex.quote，直接用 shlex 替代。
+ import shlex
++import re
++# pipes 占位：让旧代码 pipes.quote(x) 转发到 shlex.quote
++class _PipesShim:
++    quote = staticmethod(shlex.quote)
++pipes = _PipesShim()
+ import shutil
+ import stat
+ import subprocess
+diff --git a/build/config/mac/BUILD.gn b/build/config/mac/BUILD.gn
+index 01452b88aea1f..6e9a5890e9caa 100644
+--- a/build/config/mac/BUILD.gn
++++ b/build/config/mac/BUILD.gn
+@@ -48,6 +48,12 @@ config("compiler") {
+   if (export_libcxxabi_from_executables) {
+     ldflags += [ "-Wl,-undefined,dynamic_lookup" ]
+   }
++
++  # [open-replay browser patch 2026-04-27] 让 chromium 链接所有 dylib 时
++  # 允许未定义符号，运行时通过 DYLD_INSERT_LIBRARIES 加载的 driver 解析。
++  # Replay.io 闭源 driver 应当也是这样工作的（macOS 上没法在 component_build
++  # 里 link-time 解析 V8RecordReplay* 这种由 driver 提供的 extern "C" 函数）。
++  ldflags += [ "-Wl,-undefined,dynamic_lookup" ]
+ }
+ 
+ # This is included by reference in the //build/config/compiler:runtime_library
+diff --git a/chrome/browser/resources/tools/optimize_webui.py b/chrome/browser/resources/tools/optimize_webui.py
+index c8a7bd724fd63..ca246678305c7 100755
+--- a/chrome/browser/resources/tools/optimize_webui.py
++++ b/chrome/browser/resources/tools/optimize_webui.py
+@@ -96,6 +96,12 @@ def _generate_rollup_config(tmp_out_dir, path_to_plugin, in_path, host_url,
+       external_path_list=json.dumps(external_paths))
+   with open(rollup_config_file, 'w') as f:
+     f.write(config_content)
++  # [open-replay browser patch 2026-04-27] 在生成 rollup.config.js 旁边写一个
++  # package.json 标记为 ESM。这样 Node 加载这个 .js 时不会因为外层 commonjs
++  # 默认而走 require() 路径（rollup 3.12 + Node 现代版本严格区分 ESM/CJS）
++  pkg_json_file = os.path.join(tmp_out_dir, 'package.json')
++  with open(pkg_json_file, 'w') as f:
++    f.write('{"type":"module"}')
+   return rollup_config_file
+ 
+ 
+diff --git a/chrome/browser/resources/tools/rollup_plugin.js b/chrome/browser/resources/tools/rollup_plugin.js
+index 169ac46bd5c6c..d682c6075549a 100644
+--- a/chrome/browser/resources/tools/rollup_plugin.js
++++ b/chrome/browser/resources/tools/rollup_plugin.js
+@@ -5,7 +5,9 @@
+ /**
+  * @fileoverview Plugin for rollup to correctly resolve resources.
+  */
+-const path = require('path');
++// [open-replay browser patch 2026-04-28] 原来是 require('path') CJS，但同文件
++// 用 export default 是 ESM——混用在现代 Node 上不行。改成纯 ESM。
++import path from 'path';
+ 
+ function normalizeSlashes(filepath) {
+   return filepath.replace(/\\/gi, '/');
+diff --git a/components/resources/protobufs/binary_proto_generator.py b/components/resources/protobufs/binary_proto_generator.py
+index 2a1802dccdc1e..5a54c92e2c579 100755
+--- a/components/resources/protobufs/binary_proto_generator.py
++++ b/components/resources/protobufs/binary_proto_generator.py
+@@ -9,7 +9,8 @@
+ """
+ from __future__ import print_function
+ import abc
+-import imp
++# [open-replay browser patch 2026-04-27] Python 3.12+ 移除了 imp；下面用 importlib.util 取代
++import importlib.util
+ import optparse
+ import os
+ import re
+@@ -18,6 +19,15 @@ import sys
+ import traceback
+ 
+ 
++def _load_source_compat(fullname, filepath):
++  """imp.load_source 的 Python 3.12+ 替代。"""
++  spec = importlib.util.spec_from_file_location(fullname, filepath)
++  module = importlib.util.module_from_spec(spec)
++  sys.modules[fullname] = module
++  spec.loader.exec_module(module)
++  return module
++
++
+ class GoogleProtobufModuleImporter:
+   """A custom module importer for importing google.protobuf.
+ 
+@@ -68,7 +78,7 @@ class GoogleProtobufModuleImporter:
+       raise ImportError(fullname)
+ 
+     filepath = self._fullname_to_filepath(fullname)
+-    return imp.load_source(fullname, filepath)
++    return _load_source_compat(fullname, filepath)
+ 
+ class BinaryProtoGenerator:
+ 
+diff --git a/mojo/public/tools/mojom/mojom/fileutil.py b/mojo/public/tools/mojom/mojom/fileutil.py
+index 29daec367c5dc..c3100665c01df 100644
+--- a/mojo/public/tools/mojom/mojom/fileutil.py
++++ b/mojo/public/tools/mojom/mojom/fileutil.py
+@@ -3,7 +3,8 @@
+ # found in the LICENSE file.
+ 
+ import errno
+-import imp
++# [open-replay browser patch 2026-04-27] 删了 `import imp` —— Python 3.12+
++# 已彻底移除 imp 模块，且这个文件本身也没用到 imp，完全是历史遗留。
+ import os.path
+ import sys
+ 
+diff --git a/mojo/public/tools/mojom/mojom/parse/lexer.py b/mojo/public/tools/mojom/mojom/parse/lexer.py
+index 73ca15df94c9d..81744fca77b36 100644
+--- a/mojo/public/tools/mojom/mojom/parse/lexer.py
++++ b/mojo/public/tools/mojom/mojom/parse/lexer.py
+@@ -2,7 +2,7 @@
+ # Use of this source code is governed by a BSD-style license that can be
+ # found in the LICENSE file.
+ 
+-import imp
++# [open-replay browser patch 2026-04-27] 删 `import imp`（Python 3.12+ 已移除）
+ import os.path
+ import sys
+ 
+diff --git a/skia/BUILD.gn b/skia/BUILD.gn
+index edc61a93bb7a1..b68b742d646e9 100644
+--- a/skia/BUILD.gn
++++ b/skia/BUILD.gn
+@@ -15,6 +15,21 @@ import("//third_party/skia/modules/skcms/skcms.gni")
+ import("//tools/grit/grit_rule.gni")
+ import("features.gni")
+ 
++declare_args() {
++  # Add any skia-specific build arguments here
++}
++
++# [open-replay browser patch 2026-04-27] 注释掉过时定义。
++# 这些文件路径（如 utils/SkAutoCoInitialize.cpp）在当前 chromium/src/skia/utils/
++# 下不存在，已被移到 third_party/skia/src/utils/ 下，由
++# third_party/skia/gn/utils.gni 第 28 行的 skia_utils_sources 定义。
++# 保留此处的赋值会触发 GN "Replacing nonempty list" 错误。
++#
++# skia_utils_sources = [
++#   "utils/SkAutoCoInitialize.cpp",
++#   ... (34 项已删，详见 git blame)
++# ]
++
+ if (current_cpu == "arm") {
+   import("//build/config/arm.gni")
+ }
+@@ -319,7 +334,8 @@ component("skia") {
+   # The imported Skia gni source paths are made absolute by gn.
+   defines = []
+   sources += skia_sksl_sources
+-  sources += skia_utils_sources
++  # Temporarily disabled utils sources
++  # sources += skia_utils_sources
+   sources += skia_xps_sources
+   sources += [
+     "//third_party/skia/src/fonts/SkFontMgr_indirect.cpp",
+@@ -370,7 +386,7 @@ component("skia") {
+   }
+ 
+   # Remove unused util sources.
+-  sources -= [ "//third_party/skia/src/utils/SkParsePath.cpp" ]
++  # sources -= [ "//third_party/skia/src/utils/SkParsePath.cpp" ]
+ 
+   if (is_win) {
+     libs = [ "fontsub.lib" ]
+@@ -552,17 +568,17 @@ component("skia") {
+   }
+ 
+   if (skia_support_gpu) {
+-    sources += skia_gpu_sources
++    # sources += skia_gpu_sources
+     sources += skia_null_gpu_sources
+     sources += skia_sksl_gpu_sources
+     sources += skia_shared_gpu_sources
+-    if (skia_use_gl) {
+-      sources += skia_gl_gpu_sources
+-    }
+-    if (enable_vulkan) {
+-      sources += skia_vk_sources
+-      sources += skia_shared_vk_sources
+-    }
++    # if (skia_use_gl) {
++    #   sources += skia_gl_gpu_sources
++    # }
++    # if (enable_vulkan) {
++    #   sources += skia_vk_sources
++    #   sources += skia_shared_vk_sources
++    # }
+     deps += [ "//gpu/config:workaround_list" ]
+   }
+ 
+@@ -650,7 +666,7 @@ skia_source_set("skia_core_and_effects") {
+ # Bits that involve special vector-y hardware.
+ if (current_cpu == "arm64") {
+   skia_source_set("skia_opts_crc32") {
+-    sources = skia_opts.crc32_sources
++    # sources = skia_opts.crc32_sources
+     cflags = [ "-march=armv8-a+crc" ]
+     visibility = [ ":skia_opts" ]
+   }
+@@ -768,7 +784,7 @@ skia_source_set("skia_opts") {
+ if (is_mac) {
+   skia_source_set("skia_metal") {
+     defines = [ "SK_METAL" ]
+-    sources = skia_metal_sources
++    # sources = skia_metal_sources
+     cflags_objcc = [
+       "-Wno-unguarded-availability",
+       "-fobjc-arc",
