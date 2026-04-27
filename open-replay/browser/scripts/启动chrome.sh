@@ -17,8 +17,25 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 BROWSER_DIR="$(cd "$SCRIPT_DIR/.." && pwd)"
 DYLIB="$BROWSER_DIR/driver/build/libopenreplay_browser.dylib"
-CHROMIUM="${CHROMIUM:-/Users/hongrunhui/Documents/code/chromium}"
-CHROME_APP="$CHROMIUM/out/Release/Chromium.app/Contents/MacOS/Chromium"
+
+# 优先用 Replay.io 预编译的 chromium（跳过几小时自建）。
+# 如果不存在，fall back 到我们自己构建的（chromium/out/Release）。
+# 用户可设 OPENREPLAY_CHROME 强制指定路径。
+DEFAULT_PREBUILT="$HOME/.replay/runtimes/Replay-Chromium.app/Contents/MacOS/Chromium"
+DEFAULT_SELF_BUILT="${CHROMIUM:-/Users/hongrunhui/Documents/code/chromium}/out/Release/Chromium.app/Contents/MacOS/Chromium"
+
+if [[ -n "${OPENREPLAY_CHROME:-}" ]]; then
+  CHROME_APP="$OPENREPLAY_CHROME"
+elif [[ -x "$DEFAULT_PREBUILT" ]]; then
+  CHROME_APP="$DEFAULT_PREBUILT"
+  echo "==> 用 Replay.io 预编译 chromium（跳过自建）"
+elif [[ -x "$DEFAULT_SELF_BUILT" ]]; then
+  CHROME_APP="$DEFAULT_SELF_BUILT"
+  echo "==> 用自建 chromium"
+else
+  echo "ERROR: 找不到 chromium。请安装 replayio CLI 或自建 chromium。" >&2
+  exit 1
+fi
 
 # 命令行解析
 MODE="record"
@@ -48,7 +65,6 @@ if [[ ! -f "$DYLIB" ]]; then
 fi
 if [[ ! -x "$CHROME_APP" ]]; then
   echo "ERROR: chromium 二进制不存在：$CHROME_APP" >&2
-  echo "  先跑：cd $CHROMIUM/src && ninja -C ../out/Release chrome" >&2
   exit 1
 fi
 
