@@ -1,0 +1,13 @@
+# 构建产物
+driver/build/
+*.dylib
+*.dSYM/
+*.o
+*.a
+
+# 录制产物
+*.orec
+
+# 临时
+*.tmp
+.DS_Store
