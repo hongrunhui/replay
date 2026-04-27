@@ -137,6 +137,41 @@ index 01452b88aea1f..6e9a5890e9caa 100644
  }
  
  # This is included by reference in the //build/config/compiler:runtime_library
+diff --git a/build/env_dump.py b/build/env_dump.py
+index 2474b48af892c..7f146a8951ac1 100755
+--- a/build/env_dump.py
++++ b/build/env_dump.py
+@@ -9,7 +9,11 @@
+ import json
+ import optparse
+ import os
+-import pipes
++# [open-replay browser patch 2026-04-28] Python 3.13 删了 pipes，shim 转 shlex
++import shlex
++class _PipesShim:
++    quote = staticmethod(shlex.quote)
++pipes = _PipesShim()
+ import subprocess
+ import sys
+ 
+diff --git a/build/print_python_deps.py b/build/print_python_deps.py
+index 07f988a871137..7ab7c989f1bb3 100755
+--- a/build/print_python_deps.py
++++ b/build/print_python_deps.py
+@@ -11,7 +11,12 @@ required for .isolate files.
+ 
+ import argparse
+ import os
+-import pipes
++# [open-replay browser patch 2026-04-28] Python 3.13 删了 pipes 模块。pipes.quote
++# 等同于 shlex.quote，做个 shim 保留旧调用形式。
++import shlex
++class _PipesShim:
++    quote = staticmethod(shlex.quote)
++pipes = _PipesShim()
+ import sys
+ 
+ # Don't use any helper modules, or else they will end up in the results.
 diff --git a/chrome/browser/resources/tools/optimize_webui.py b/chrome/browser/resources/tools/optimize_webui.py
 index c8a7bd724fd63..ca246678305c7 100755
 --- a/chrome/browser/resources/tools/optimize_webui.py
