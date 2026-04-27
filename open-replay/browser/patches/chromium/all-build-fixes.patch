@@ -121,10 +121,27 @@ index af19f14fb6cc8..704dd6c52ad0a 100644
  import stat
  import subprocess
 diff --git a/build/config/mac/BUILD.gn b/build/config/mac/BUILD.gn
-index 01452b88aea1f..6e9a5890e9caa 100644
+index 01452b88aea1f..aefb85e2cbe46 100644
 --- a/build/config/mac/BUILD.gn
 +++ b/build/config/mac/BUILD.gn
-@@ -48,6 +48,12 @@ config("compiler") {
+@@ -30,7 +30,15 @@ config("compiler") {
+   # This is here so that all files get recompiled after an Xcode update.
+   # (defines are passed via the command line, and build system rebuild things
+   # when their commandline changes). Nothing should ever read this define.
+-  defines = [ "CR_XCODE_VERSION=$xcode_version" ]
++  defines = [
++    "CR_XCODE_VERSION=$xcode_version",
++
++    # [open-replay browser patch 2026-04-28] SDK 14.2 + chromium clang 16 不再
++    # 把 __ENVIRONMENT_OS_VERSION_MIN_REQUIRED__ 当 builtin 预定义；后者在
++    # AvailabilityInternal.h 里被 __MAC_OS_X_VERSION_MIN_REQUIRED 引用。
++    # 我们 -mmacos-version-min=10.13 = 101300，在这里手工提供。
++    "__ENVIRONMENT_OS_VERSION_MIN_REQUIRED__=101300",
++  ]
+ 
+   asmflags = common_mac_flags
+   cflags = common_mac_flags
+@@ -48,6 +56,12 @@ config("compiler") {
    if (export_libcxxabi_from_executables) {
      ldflags += [ "-Wl,-undefined,dynamic_lookup" ]
    }
