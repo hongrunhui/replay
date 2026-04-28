@@ -17,6 +17,14 @@
 // 在 driver.cc，我们没 port driver.cc 所以补在这里。
 int g_intercept_depth = 0;
 
+// [B6.4 fix] 拦截器用的 atomic 指针，构造器完成才设。
+// chromium 启动早期，其它 dylib 的 init 可能调到被 DYLD_INTERPOSE 的 libc
+// 函数，那时 DriverState 还没构造完。intercept_compat.h 里的 helper 改成
+// 检查这个指针——nullptr 时直接返回 false，让 interceptor 走真实路径。
+#include <atomic>
+namespace openreplay { class DriverState; }
+std::atomic<openreplay::DriverState*> g_driver_state{nullptr};
+
 namespace openreplay {
 
 const char* RoleName(ProcessRole r) {
@@ -126,6 +134,9 @@ DriverState::DriverState() {
   if (mode_ != Mode::kOff) {
     ResolveSessionAndOpen();
   }
+
+  // 构造器完成 —— 让 interceptors 通过 atomic 指针看到我们
+  ::g_driver_state.store(this, std::memory_order_release);
 
   // 注册 atexit 让 .orec 文件能在进程退出时正常关（写 tail + sentinel）。
   // chromium 的 renderer/gpu 子进程退出走 _exit() 不调静态析构，仅靠 ~DriverState

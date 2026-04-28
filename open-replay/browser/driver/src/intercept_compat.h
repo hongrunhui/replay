@@ -1,32 +1,43 @@
-// intercept_compat.h —— 兼容层：把 intercept/*.cc 用的 Node.js driver 的 helper
-// 名字（RecordReplayValue 等）转发到我们 DriverState。
+// intercept_compat.h —— intercept/*.cc 用的兼容层。
+// [B6.4 fix] 不再调 DriverState::Get()，避免在 chromium 启动早期触发
+// pthread_once 跑构造器。直接用 atomic 指针检查 driver 是否就绪。
 
 #ifndef OPENREPLAY_BROWSER_INTERCEPT_COMPAT_H_
 #define OPENREPLAY_BROWSER_INTERCEPT_COMPAT_H_
 
+#include <atomic>
 #include "state.h"
 
+extern std::atomic<openreplay::DriverState*> g_driver_state;
+
+inline openreplay::DriverState* GetReadyDriver() {
+  return g_driver_state.load(std::memory_order_acquire);
+}
+
 inline bool RecordReplayIsRecording() {
-  return openreplay::DriverState::Get()->is_recording();
+  auto* s = GetReadyDriver();
+  return s && s->is_recording();
 }
 inline bool RecordReplayIsReplaying() {
-  return openreplay::DriverState::Get()->is_replaying();
+  auto* s = GetReadyDriver();
+  return s && s->is_replaying();
 }
 inline bool RecordReplayIsRecordingOrReplaying() {
-  return openreplay::DriverState::Get()->mode() != openreplay::Mode::kOff;
+  auto* s = GetReadyDriver();
+  return s && s->mode() != openreplay::Mode::kOff;
 }
-// 简化：driver 内部拦截器不参与 PassThrough 状态机，永远返回 false。
 inline bool RecordReplayAreEventsPassedThrough() { return false; }
 
 inline uintptr_t RecordReplayValue(const char* why, uintptr_t v) {
-  auto* s = openreplay::DriverState::Get();
+  auto* s = GetReadyDriver();
+  if (!s) return v;
   if (s->is_recording()) { s->WriteValue(why, v); return v; }
   if (s->is_replaying()) return s->ReadValue(why, v);
   return v;
 }
-// Node.js driver 这函数返回 bool（成功标志）；record 总成功，replay 看 reader。
 inline bool RecordReplayBytes(const char* why, void* buf, size_t size) {
-  auto* s = openreplay::DriverState::Get();
+  auto* s = GetReadyDriver();
+  if (!s) return false;
   if (s->is_recording()) { s->WriteBytes(why, buf, size); return true; }
   if (s->is_replaying()) return s->ReadBytes(why, buf, size);
   return false;
