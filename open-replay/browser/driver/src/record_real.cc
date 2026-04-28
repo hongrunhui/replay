@@ -7,6 +7,8 @@
 
 #include "state.h"
 
+#include <pthread.h>
+
 #include <cstdarg>
 #include <cstdint>
 #include <cstdio>
@@ -331,6 +333,78 @@ extern "C" void V8RecordReplayBrowserEvent(const char* name, const char* payload
   AppendString(buf, name);
   AppendString(buf, payload);
   RecordOrConsume("V8RecordReplayBrowserEvent", buf);
+}
+
+// ============================================================
+// B6.3 有序锁（最小版：录序列；replay 仅推进游标，不真正阻塞线程）
+// ============================================================
+//
+// 完整实现需要 record 时把每次 acquire 的 (lock_id, thread_id, seq) 写下来，
+// replay 时让 thread 等到它的轮次。这版只做前半（record），后半将来用
+// pthread_cond_t + per-thread waiters 完成。
+//
+// CreateOrderedLock(name) → size_t：返回 name 的 FNV-1a hash 作为 lock id。
+// 同一个 name 在 record 和 replay 时产生同一个 id，无需 driver 维护映射。
+
+static uint32_t FnvHash32(const char* str) {
+  uint32_t h = 0x811c9dc5;
+  while (*str) {
+    h ^= static_cast<uint8_t>(*str++);
+    h *= 0x01000193;
+  }
+  return h;
+}
+
+extern "C" size_t V8RecordReplayCreateOrderedLock(const char* name) {
+  return name ? static_cast<size_t>(FnvHash32(name)) : 0;
+}
+
+extern "C" void V8RecordReplayOrderedLock(int lock) {
+  std::vector<uint8_t> buf;
+  AppendNum(buf, static_cast<int32_t>(lock));
+  AppendNum(buf, static_cast<uint64_t>(
+      reinterpret_cast<uintptr_t>(pthread_self())));
+  RecordOrConsume("V8RecordReplayOrderedLock", buf);
+}
+
+extern "C" void V8RecordReplayOrderedUnlock(int lock) {
+  std::vector<uint8_t> buf;
+  AppendNum(buf, static_cast<int32_t>(lock));
+  AppendNum(buf, static_cast<uint64_t>(
+      reinterpret_cast<uintptr_t>(pthread_self())));
+  RecordOrConsume("V8RecordReplayOrderedUnlock", buf);
+}
+
+// ============================================================
+// 事件包装：BeginDisallowEvents/EndDisallowEvents/PassThrough 等
+// 这些在 chromium 大量使用（[RUN-1039] 那批 log 全是它）；现在记下来便于
+// 后续诊断 record→replay 是否同步。
+// ============================================================
+
+extern "C" void V8RecordReplayBeginDisallowEvents() {
+  std::vector<uint8_t> buf;
+  RecordOrConsume("V8RecordReplayBeginDisallowEvents", buf);
+}
+
+extern "C" void V8RecordReplayBeginDisallowEventsWithLabel(const char* label) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, label);
+  RecordOrConsume("V8RecordReplayBeginDisallowEventsWithLabel", buf);
+}
+
+extern "C" void V8RecordReplayEndDisallowEvents() {
+  std::vector<uint8_t> buf;
+  RecordOrConsume("V8RecordReplayEndDisallowEvents", buf);
+}
+
+extern "C" void V8RecordReplayBeginPassThroughEvents() {
+  std::vector<uint8_t> buf;
+  RecordOrConsume("V8RecordReplayBeginPassThroughEvents", buf);
+}
+
+extern "C" void V8RecordReplayEndPassThroughEvents() {
+  std::vector<uint8_t> buf;
+  RecordOrConsume("V8RecordReplayEndPassThroughEvents", buf);
 }
 
 extern "C" void V8RecordReplayFinishRecording() {
