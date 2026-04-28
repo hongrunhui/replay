@@ -61,6 +61,8 @@ clang++ "${CXXFLAGS[@]}" "${LDFLAGS[@]}" \
   "$SRC_DIR/recording.cc" \
   "$SRC_DIR/state.cc" \
   "$SRC_DIR/record_real.cc" \
+  "$SRC_DIR/intercept/net.cc" \
+  "$SRC_DIR/intercept/time.cc" \
   -o "$OUT"
 
 echo "==> built $OUT"
