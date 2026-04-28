@@ -12,6 +12,11 @@
 #include <cstdlib>
 #include <cstring>
 
+// [B6.4] g_intercept_depth：拦截器防递归全局深度计数器，被 intercept/common.h
+// extern 声明、被各 intercept/*.cc 用 InterceptGuard 操作。Node.js driver 定义
+// 在 driver.cc，我们没 port driver.cc 所以补在这里。
+int g_intercept_depth = 0;
+
 namespace openreplay {
 
 const char* RoleName(ProcessRole r) {
