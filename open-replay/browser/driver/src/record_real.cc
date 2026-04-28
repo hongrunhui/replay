@@ -12,9 +12,45 @@
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
+#include <vector>
 
 using openreplay::DriverState;
 using openreplay::Mode;
+
+// ============================================================
+// 序列化辅助：把 On* 回调的参数打包为 BYTES 事件（B6.1 / B6.2）
+// 格式：[u32 len][bytes...] 重复每个 string，原始字节追加每个数值
+// ============================================================
+namespace {
+
+void AppendString(std::vector<uint8_t>& buf, const char* s) {
+  uint32_t len = s ? static_cast<uint32_t>(std::strlen(s)) : 0;
+  const uint8_t* lp = reinterpret_cast<const uint8_t*>(&len);
+  buf.insert(buf.end(), lp, lp + 4);
+  if (len) buf.insert(buf.end(),
+                      reinterpret_cast<const uint8_t*>(s),
+                      reinterpret_cast<const uint8_t*>(s) + len);
+}
+
+template <typename T>
+void AppendNum(std::vector<uint8_t>& buf, T v) {
+  const uint8_t* p = reinterpret_cast<const uint8_t*>(&v);
+  buf.insert(buf.end(), p, p + sizeof(T));
+}
+
+// 录制模式：把 buf 写入 .orec 作为 BYTES 事件
+// 回放模式：只推进 reader 游标（暂不验证内容；后续做 AssertValue 时再补）
+// off 模式：什么都不做
+void RecordOrConsume(const char* why, const std::vector<uint8_t>& buf) {
+  auto* s = DriverState::Get();
+  if (s->is_recording()) {
+    s->WriteBytes(why, buf.data(), buf.size());
+  } else if (s->is_replaying()) {
+    s->ReplayConsumeEvent(why);
+  }
+}
+
+}  // namespace
 
 // ============================================================
 // 状态查询：直接读 DriverState
@@ -196,6 +232,106 @@ extern "C" void RecordReplayAssert(const char* format, va_list args) {
 // ============================================================
 // 终止类
 // ============================================================
+
+// ============================================================
+// B6.1 网络事件遥测
+// ============================================================
+
+extern "C" void V8RecordReplayOnNetworkRequest(const char* id, const char* kind,
+                                                uint64_t bookmark) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, id);
+  AppendString(buf, kind);
+  AppendNum(buf, bookmark);
+  RecordOrConsume("V8RecordReplayOnNetworkRequest", buf);
+}
+
+extern "C" void V8RecordReplayOnNetworkRequestEvent(const char* id) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, id);
+  RecordOrConsume("V8RecordReplayOnNetworkRequestEvent", buf);
+}
+
+extern "C" void V8RecordReplayOnNetworkStreamStart(const char* id, const char* kind,
+                                                    const char* parentId) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, id);
+  AppendString(buf, kind);
+  AppendString(buf, parentId);
+  RecordOrConsume("V8RecordReplayOnNetworkStreamStart", buf);
+}
+
+extern "C" void V8RecordReplayOnNetworkStreamData(const char* id, size_t offset,
+                                                   size_t length, uint64_t bookmark) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, id);
+  AppendNum(buf, static_cast<uint64_t>(offset));
+  AppendNum(buf, static_cast<uint64_t>(length));
+  AppendNum(buf, bookmark);
+  RecordOrConsume("V8RecordReplayOnNetworkStreamData", buf);
+}
+
+extern "C" void V8RecordReplayOnNetworkStreamEnd(const char* id, size_t length) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, id);
+  AppendNum(buf, static_cast<uint64_t>(length));
+  RecordOrConsume("V8RecordReplayOnNetworkStreamEnd", buf);
+}
+
+// ============================================================
+// B6.2 输入事件遥测
+// ============================================================
+
+extern "C" void V8RecordReplayOnEvent(const char* event, bool before) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, event);
+  AppendNum(buf, static_cast<uint8_t>(before ? 1 : 0));
+  RecordOrConsume("V8RecordReplayOnEvent", buf);
+}
+
+extern "C" void V8RecordReplayOnMouseEvent(const char* kind, size_t clientX,
+                                            size_t clientY, bool synthetic) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, kind);
+  AppendNum(buf, static_cast<uint64_t>(clientX));
+  AppendNum(buf, static_cast<uint64_t>(clientY));
+  AppendNum(buf, static_cast<uint8_t>(synthetic ? 1 : 0));
+  RecordOrConsume("V8RecordReplayOnMouseEvent", buf);
+}
+
+extern "C" void V8RecordReplayOnKeyEvent(const char* kind, const char* key,
+                                          bool synthetic) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, kind);
+  AppendString(buf, key);
+  AppendNum(buf, static_cast<uint8_t>(synthetic ? 1 : 0));
+  RecordOrConsume("V8RecordReplayOnKeyEvent", buf);
+}
+
+extern "C" void V8RecordReplayOnNavigationEvent(const char* kind, const char* url) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, kind);
+  AppendString(buf, url);
+  RecordOrConsume("V8RecordReplayOnNavigationEvent", buf);
+}
+
+// ============================================================
+// 浏览器事件 + 注解
+// ============================================================
+
+extern "C" void V8RecordReplayOnAnnotation(const char* kind, const char* contents) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, kind);
+  AppendString(buf, contents);
+  RecordOrConsume("V8RecordReplayOnAnnotation", buf);
+}
+
+extern "C" void V8RecordReplayBrowserEvent(const char* name, const char* payload) {
+  std::vector<uint8_t> buf;
+  AppendString(buf, name);
+  AppendString(buf, payload);
+  RecordOrConsume("V8RecordReplayBrowserEvent", buf);
+}
 
 extern "C" void V8RecordReplayFinishRecording() {
   // 让 RecordingWriter 进入 close 流程 —— 但 DriverState 析构会处理，

@@ -262,6 +262,16 @@ uintptr_t DriverState::ReadValue(const char* why, uintptr_t default_value) {
   return v;
 }
 
+void DriverState::ReplayConsumeEvent(const char* why) {
+  if (!reader_) return;
+  reader_->NextEvent(why);  // 只推进游标，不复制内容
+}
+
+uint64_t DriverState::recorded_events() const {
+  if (writer_) return writer_->event_count();
+  return 0;
+}
+
 bool DriverState::ReadBytes(const char* why, void* buf, size_t size) {
   if (!reader_) return false;
   const auto* ev = reader_->NextEvent(why);

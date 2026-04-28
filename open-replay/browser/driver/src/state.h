@@ -63,6 +63,12 @@ class DriverState {
   uintptr_t ReadValue(const char* why, uintptr_t default_value);
   // 取下一个 why 标签的 BYTES 事件，把内容拷进 buf；找不到时不动 buf 并返回 false
   bool ReadBytes(const char* why, void* buf, size_t size);
+  // 仅消费下一个 why 标签的事件（不关心内容大小，纯进度对齐）
+  // 用于纯遥测类的 V8RecordReplayOn* 回调，回放时只需推进游标
+  void ReplayConsumeEvent(const char* why);
+
+  // 暴露事件计数（含遥测）
+  uint64_t recorded_events() const;
 
   // 主线程识别：第一个调进 driver 的线程被标记为"主线程"
   bool IsMainThread();
