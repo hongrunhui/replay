@@ -3,6 +3,7 @@
 #include "state.h"
 
 #include <crt_externs.h>  // _NSGetArgc, _NSGetArgv
+#include <dirent.h>
 #include <pthread.h>
 #include <sys/stat.h>
 #include <unistd.h>
@@ -120,6 +121,15 @@ DriverState::DriverState() {
   if (mode_ != Mode::kOff) {
     ResolveSessionAndOpen();
   }
+
+  // 注册 atexit 让 .orec 文件能在进程退出时正常关（写 tail + sentinel）。
+  // chromium 的 renderer/gpu 子进程退出走 _exit() 不调静态析构，仅靠 ~DriverState
+  // 在 main thread C++ 退出阶段触发，但 _exit() 跳过这阶段。atexit 注册的回调
+  // 只在 exit() 时跑，_exit 也跳过——但绝大多数 chromium 进程走的是 normal exit。
+  std::atexit(+[]() {
+    auto* s = DriverState::Get();
+    if (s->writer_) s->writer_->Close();
+  });
 }
 
 DriverState::~DriverState() {
@@ -169,8 +179,35 @@ void DriverState::ResolveSessionAndOpen() {
   EnsureDir(base);
 
   char file[1024];
-  std::snprintf(file, sizeof(file), "%s/%s-%d.orec",
-                base.c_str(), RoleName(role_), (int)pid_);
+  if (mode_ == Mode::kRecord) {
+    // 录制时按 <role>-<pid>.orec 命名，避免同 role 的多进程冲突
+    std::snprintf(file, sizeof(file), "%s/%s-%d.orec",
+                  base.c_str(), RoleName(role_), (int)pid_);
+  } else {
+    // 回放时 pid 跟录制时不一样，按 role 找匹配的 .orec
+    // 一个 session 同 role 可能有多份（重启/重连）—— MVP 取字典序最早一份
+    DIR* d = opendir(base.c_str());
+    std::string match;
+    if (d) {
+      std::string prefix = std::string(RoleName(role_)) + "-";
+      struct dirent* ent;
+      while ((ent = readdir(d)) != nullptr) {
+        std::string name(ent->d_name);
+        if (name.size() > prefix.size() + 5 &&
+            name.compare(0, prefix.size(), prefix) == 0 &&
+            name.substr(name.size() - 5) == ".orec") {
+          if (match.empty() || name < match) match = name;
+        }
+      }
+      closedir(d);
+    }
+    if (match.empty()) {
+      std::snprintf(file, sizeof(file), "%s/%s-MISSING.orec",
+                    base.c_str(), RoleName(role_));
+    } else {
+      std::snprintf(file, sizeof(file), "%s/%s", base.c_str(), match.c_str());
+    }
+  }
   orec_path_ = file;
 
   if (mode_ == Mode::kRecord) {

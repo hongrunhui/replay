@@ -248,23 +248,30 @@ bool RecordingReader::Open(const char* path) {
   }
 
   // Parse tail
-  if (!ParseTail(buf.data(), buf.size())) {
-    fprintf(stderr, "[openreplay] Invalid file tail\n");
-    return false;
+  bool tail_ok = ParseTail(buf.data(), buf.size());
+  if (!tail_ok) {
+    // [open-replay browser patch 2026-04-28] tail 缺失/损坏（最常见原因：
+    // 进程被 SIGKILL，atexit 没跑）—— 容忍：把整个 header 之后的内容当作
+    // 事件流，跳过 checkpoint index 解析。Replay 时仍可消费已有事件。
+    fprintf(stderr, "[openreplay] WARN: invalid file tail, treating events as full stream\n");
   }
 
   // Parse event stream (between header and checkpoint index)
   size_t events_start = sizeof(FileHeader);
-  size_t events_end = static_cast<size_t>(
-      buf.size() - sizeof(FileTail));
+  size_t events_end = tail_ok
+      ? static_cast<size_t>(buf.size() - sizeof(FileTail))
+      : buf.size();
 
-  // Parse checkpoint index (before tail)
-  // The checkpoint index starts at checkpoint_offset from tail
+  // Parse checkpoint index (before tail) — 仅当 tail 完整时才有可信数据
   FileTail tail;
-  memcpy(&tail, buf.data() + buf.size() - sizeof(FileTail), sizeof(FileTail));
+  if (tail_ok) {
+    memcpy(&tail, buf.data() + buf.size() - sizeof(FileTail), sizeof(FileTail));
+  } else {
+    memset(&tail, 0, sizeof(tail));
+  }
 
   size_t cp_start = static_cast<size_t>(tail.checkpoint_offset);
-  if (cp_start >= sizeof(FileHeader) && cp_start < buf.size() - sizeof(FileTail)) {
+  if (tail_ok && cp_start >= sizeof(FileHeader) && cp_start < buf.size() - sizeof(FileTail)) {
     const uint8_t* cp_ptr = buf.data() + cp_start;
     uint32_t cp_count;
     memcpy(&cp_count, cp_ptr, 4);
