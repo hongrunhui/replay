@@ -11,3 +11,5 @@ driver/build/
 # 临时
 *.tmp
 .DS_Store
+a.out
+*.bak
