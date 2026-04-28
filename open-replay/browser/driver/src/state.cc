@@ -140,7 +140,18 @@ DriverState::~DriverState() {
 void DriverState::DetectProcessRole() {
   std::string type;
   if (!ParseArgvForType(type)) {
-    role_ = ProcessRole::kBrowser;
+    // 没 --type=：可能是 main browser，也可能是 helper-launcher / crashpad
+    // 子进程之类（Chromium 用 argv[0] 区分：主进程是 "...Chromium"，
+    // helper 类是 "...Chromium Helper" 或 helper bundle 路径）
+    int* argcp = _NSGetArgc();
+    char*** argvp = _NSGetArgv();
+    const char* a0 = (argcp && argvp && *argcp > 0) ? (*argvp)[0] : "";
+    if (std::strstr(a0, "Helper") || std::strstr(a0, "crashpad") ||
+        std::strstr(a0, "launcher")) {
+      role_ = ProcessRole::kUtility;  // 归到 utility，避免污染 browser-*.orec
+    } else {
+      role_ = ProcessRole::kBrowser;
+    }
     return;
   }
   if (type == "renderer") role_ = ProcessRole::kRenderer;
